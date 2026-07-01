@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Key Vault Secret Revealer</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #11100f;
+            --panel: #1f1e1d;
+            --panel-soft: #292827;
+            --border: #3b3a39;
+            --text: #ffffff;
+            --muted: #c8c6c4;
+            --muted-2: #a19f9d;
+            --azure: #0078d4;
+            --azure-hover: #106ebe;
+            --success: #54b054;
+            --error: #ff8a90;
+            --warning: #ffcf33;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 344px;
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background:
+                radial-gradient(circle at 12% 0%, rgba(0, 120, 212, 0.3), transparent 34%),
+                linear-gradient(145deg, #252423 0%, var(--bg) 72%);
+            color: var(--text);
+        }
+
+        .shell {
+            padding: 16px;
+        }
+
+        .hero {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+
+        .brand-mark {
+            display: grid;
+            width: 46px;
+            height: 46px;
+            flex: 0 0 auto;
+            place-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+            overflow: hidden;
+        }
+
+        .brand-mark img {
+            width: 46px;
+            height: 46px;
+            display: block;
+        }
+
+        .eyebrow {
+            margin: 0 0 2px;
+            color: #9cdcfe;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 18px;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+        }
+
+        .card {
+            padding: 13px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: rgba(31, 30, 29, 0.88);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25);
+        }
+
+        .lede,
+        .hint,
+        .meta,
+        .config,
+        summary {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .lede {
+            margin: 0 0 12px;
+        }
+
+        .actions {
+            display: grid;
+            gap: 8px;
+        }
+
+        button,
+        textarea,
+        summary {
+            font: inherit;
+        }
+
+        button {
+            width: 100%;
+            min-height: 36px;
+            border: 0;
+            border-radius: 9px;
+            background: var(--azure);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 650;
+            transition: background 120ms ease, border-color 120ms ease, opacity 120ms ease, transform 120ms ease;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--azure-hover);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+
+        button:focus-visible,
+        textarea:focus-visible,
+        summary:focus-visible {
+            outline: 2px solid #9cdcfe;
+            outline-offset: 2px;
+        }
+
+        button:disabled {
+            cursor: default;
+            opacity: 0.52;
+        }
+
+        button.secondary {
+            border: 1px solid #4f4d4b;
+            background: var(--panel-soft);
+            color: #f3f2f1;
+        }
+
+        button.secondary:hover:not(:disabled) {
+            background: #323130;
+            border-color: #605e5c;
+        }
+
+        .status {
+            display: none;
+            margin-top: 12px;
+            padding: 9px 10px;
+            border: 1px solid rgba(84, 176, 84, 0.35);
+            border-radius: 10px;
+            background: rgba(16, 124, 16, 0.13);
+            color: #b4f1b4;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        .status-error {
+            border-color: rgba(255, 138, 144, 0.38);
+            background: rgba(209, 52, 56, 0.16);
+            color: var(--error);
+        }
+
+        .meta {
+            margin: 10px 0 0;
+            word-break: break-word;
+        }
+
+        .config {
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+            color: var(--muted-2);
+            white-space: pre-line;
+            word-break: break-word;
+        }
+
+        details {
+            margin-top: 12px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border);
+        }
+
+        summary {
+            cursor: pointer;
+            list-style-position: outside;
+        }
+
+        .hint {
+            margin: 10px 0 8px;
+            color: var(--muted-2);
+        }
+
+        textarea {
+            width: 100%;
+            height: 72px;
+            margin: 0 0 8px;
+            padding: 9px;
+            resize: vertical;
+            border: 1px solid #4f4d4b;
+            border-radius: 9px;
+            background: #171615;
+            color: var(--text);
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 11px;
+            line-height: 1.35;
+        }
+
+        textarea::placeholder {
+            color: #8a8886;
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <section class="hero" aria-label="Extension identity">
+            <div class="brand-mark" aria-hidden="true">
+                <img src="icons/icon128.png" alt="">
+            </div>
+            <div>
+                <p class="eyebrow">Azure Key Vault</p>
+                <h1>Secret Revealer</h1>
+            </div>
+        </section>
+
+        <section class="card">
+            <p class="lede">Sign in with Microsoft to request delegated Key Vault access in Azure Portal.</p>
+            <div class="actions">
+                <button id="signInBtn">Sign in with Microsoft</button>
+                <button id="signOutBtn" class="secondary">Sign out</button>
+            </div>
+
+            <details>
+                <summary>Advanced: paste temporary token</summary>
+                <p class="hint">
+                    Use this to get a token (AZ CLI required):
+                    <br><br>
+                    <code style="display: inline-block; padding: 4px 8px; border-radius: 4px; background: #333; color: #fff;">
+                        az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv
+                    </code>
+                    <br><br>
+                    <strong>Note:</strong> This token is only valid for 30 minutes.
+                </p>
+                <textarea id="tokenInput" placeholder="Paste Key Vault access token"></textarea>
+                <div class="actions">
+                    <button id="saveTokenBtn">Use pasted token</button>
+                    <button id="clearTokenBtn" class="secondary">Clear pasted token</button>
+                </div>
+            </details>
+
+            <div id="status" class="status" role="status" aria-live="polite">Checking status...</div>
+            <p id="accountInfo" class="meta"></p>
+            <div id="configInfo" class="config"></div>
+        </section>
+    </main>
+
+    <script src="popup.js"></script>
+</body>
+</html>

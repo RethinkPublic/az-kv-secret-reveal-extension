@@ -1,0 +1,42 @@
+{
+  "manifest_version": 3,
+  "name": "Azure Key Vault Secret Revealer",
+  "version": "1.0",
+  "description": "Reveals Key Vault secret values for the current user (with valid RBAC permissions and network access) in the Azure Portal.",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "permissions": [
+    "storage",
+    "activeTab",
+    "identity"
+  ],
+  "host_permissions": [
+    "https://portal.azure.com/*",
+    "https://*.vault.azure.net/*",
+    "https://login.microsoftonline.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_popup": "popup.html",
+    "default_title": "Key Vault Secret Revealer"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://portal.azure.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
