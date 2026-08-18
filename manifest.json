@@ -3,6 +3,7 @@
   "name": "Azure Key Vault Secret Revealer",
   "version": "1.0",
   "description": "Reveals Key Vault secret values for the current user (with valid RBAC permissions and network access) in the Azure Portal.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArd+AwevU46sdLpYkwiwOWCL9EaTCusFFuU/mE2TG8/WVPDwQRTOm4l7Nm6PyxS0a/yPVECfgYQeIAY8heF6UB4XeVJK+7Hx2TEWgAH30zW7SYCcs4GJkKZNNVorR5ezrXQgNShDUGZI78TxAL1+zY5e4GFHx4r1r/owCfv5kymATTuO4WxQD8HFm1bRoSMd6RD2zkCYsjfZYbN1PXwgSZFPTmodAvsAatyM6njspJI7c2hE3VDBa1GvmZU3wDIh4ydpZyFTbbkDEXe1wCCY3yT5683BsdbnKhZ58TlqW2lydpyb4DhFnjsjvOlVnGTphjUhV+Nz5YUQR9jaJZiAqOwIDAQAB",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",

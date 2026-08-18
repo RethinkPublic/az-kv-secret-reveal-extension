@@ -146,6 +146,10 @@
             opacity: 0.52;
         }
 
+        button[hidden] {
+            display: none;
+        }
+
         button.secondary {
             border: 1px solid #4f4d4b;
             background: var(--panel-soft);
@@ -238,9 +242,9 @@
         </section>
 
         <section class="card">
-            <p class="lede">Sign in with Microsoft to request delegated Key Vault access in Azure Portal.</p>
+            <p id="lede" class="lede">Sign in with Microsoft to request delegated Key Vault access in Azure Portal.</p>
             <div class="actions">
-                <button id="signInBtn">Sign in with Microsoft</button>
+                <button id="signInBtn">Sign-in</button>
                 <button id="signOutBtn" class="secondary">Sign out</button>
             </div>
 

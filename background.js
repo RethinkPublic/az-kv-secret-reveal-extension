@@ -2,15 +2,31 @@
 
 // Entra app registration setup:
 // - Register a public client / SPA-style app. Do not configure a client secret.
-// - Add this exact redirect URI to the app: chrome.identity.getRedirectURL().
+// - Add this exact redirect URI to the app: https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/
+//   The extension ID is pinned by the "key" field in manifest.json, so this URI is stable across installs.
 // - Grant delegated Key Vault permissions and assign Key Vault data-plane RBAC to the signed-in user.
 // - Replace CLIENT_ID below with the app registration's Application (client) ID.
 const CLIENT_ID = "3cf88cbe-59ac-40ec-ae35-27eea2dcf2d3";
 const TENANT_ID = "organizations";
 const KEY_VAULT_SCOPE = "https://vault.azure.net/.default";
 
+// Key Vault only accepts tokens issued by the tenant that owns the vault, so the
+// authority cannot be a single constant. Vaults in other tenants answer the first
+// call with 401 plus a WWW-Authenticate challenge naming their tenant; that tenant
+// is then used as the authority and remembered per vault.
+const TENANT_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CHALLENGE_AUTHORITY_HOSTS = new Set([
+    "login.microsoftonline.com",
+    "login.windows.net",
+    "sts.windows.net",
+    "login.microsoftonline.us",
+    "login.partner.microsoftonline.cn"
+]);
+
 const KEY_VAULT_API_VERSION = "7.4";
 const FETCH_TIMEOUT_MS = 15000;
+const KEY_VAULT_SECRET_LIST_MAX_RESULTS = 25;
+const MAX_SECRET_LIST_PAGES = 400;
 const ACCESS_TOKEN_EXPIRY_SKEW_MS = 60000;
 const OAUTH_SCOPES = `openid profile offline_access ${KEY_VAULT_SCOPE}`;
 const TRANSIENT_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -20,12 +36,15 @@ const AUTH_STORAGE_KEYS = [
     "kvAuthAccount",
     "kvAuthTenantId"
 ];
+const VAULT_TENANT_STORAGE_KEY = "kvVaultTenantMap";
 const SESSION_TOKEN_STORAGE_KEY = "kvSessionToken";
+const PENDING_TENANT_STORAGE_KEY = "kvPendingTenantId";
 const LEGACY_AUTH_STORAGE_KEYS = ["kvToken"];
 
-let cachedAccessToken = "";
-let cachedAccessTokenExpiresAt = 0;
-let pendingAccessTokenRequest = null;
+// Access tokens stay in memory only; the refresh token is the sole persisted credential.
+const accessTokenCache = new Map();
+const pendingAccessTokenRequests = new Map();
+let vaultTenantMap = null;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || typeof request.action !== "string") {
@@ -52,8 +71,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === "listSecrets") {
+        if (sender.url && !sender.url.startsWith("https://portal.azure.com/")) {
+            sendResponse({ error: "Unsupported sender" });
+            return false;
+        }
+
+        handleAsyncMessage(handleListSecrets(request), sendResponse);
+        return true;
+    }
+
     if (request.action === "signIn") {
-        handleAsyncMessage(handleSignIn(), sendResponse);
+        handleAsyncMessage(handleSignIn(request.tenantId), sendResponse);
         return true;
     }
 
@@ -108,8 +137,69 @@ function isClientConfigured() {
     return Boolean(CLIENT_ID && CLIENT_ID !== "TODO_ENTER_ENTRA_APP_CLIENT_ID");
 }
 
-function getAuthorityUrl(path) {
-    return `https://login.microsoftonline.com/${encodeURIComponent(TENANT_ID)}/oauth2/v2.0/${path}`;
+function isTenantGuid(value) {
+    return TENANT_GUID_PATTERN.test(String(value || ""));
+}
+
+function normalizeTenantKey(tenantId) {
+    return isTenantGuid(tenantId) ? String(tenantId).toLowerCase() : TENANT_ID;
+}
+
+function getAuthorityUrl(path, tenantId = TENANT_ID) {
+    return `https://login.microsoftonline.com/${encodeURIComponent(normalizeTenantKey(tenantId))}/oauth2/v2.0/${path}`;
+}
+
+// Key Vault answers a wrong-tenant token with:
+// WWW-Authenticate: Bearer authorization="https://login.windows.net/<tenant>", resource="https://vault.azure.net"
+function parseTenantFromChallenge(headerValue) {
+    const match = /(?:authorization_uri|authorization)="([^"]+)"/i.exec(String(headerValue || ""));
+    if (!match) {
+        return "";
+    }
+
+    try {
+        const authority = new URL(match[1]);
+        if (authority.protocol !== "https:" || !CHALLENGE_AUTHORITY_HOSTS.has(authority.hostname.toLowerCase())) {
+            return "";
+        }
+
+        const firstSegment = authority.pathname.split("/").filter(Boolean)[0] || "";
+        return isTenantGuid(firstSegment) ? firstSegment.toLowerCase() : "";
+    } catch {
+        return "";
+    }
+}
+
+async function getVaultTenantMap() {
+    if (!vaultTenantMap) {
+        const stored = await storageGet([VAULT_TENANT_STORAGE_KEY]);
+        const raw = stored[VAULT_TENANT_STORAGE_KEY];
+        vaultTenantMap = raw && typeof raw === "object" ? { ...raw } : {};
+    }
+
+    return vaultTenantMap;
+}
+
+async function getVaultTenant(vaultName) {
+    const map = await getVaultTenantMap();
+    const tenantId = map[vaultName.toLowerCase()];
+    return isTenantGuid(tenantId) ? tenantId : "";
+}
+
+async function rememberVaultTenant(vaultName, tenantId) {
+    if (!isTenantGuid(tenantId)) {
+        return;
+    }
+
+    const map = await getVaultTenantMap();
+    const key = vaultName.toLowerCase();
+
+    if (map[key] === tenantId) {
+        return;
+    }
+
+    map[key] = tenantId;
+    await storageSet({ [VAULT_TENANT_STORAGE_KEY]: map });
 }
 
 function storageGet(keys) {
@@ -211,12 +301,36 @@ function getStoredAuth() {
     }));
 }
 
-function hasUsableCachedAccessToken() {
-    return Boolean(
-        cachedAccessToken
-        && cachedAccessTokenExpiresAt
-        && Date.now() < cachedAccessTokenExpiresAt - ACCESS_TOKEN_EXPIRY_SKEW_MS
-    );
+function getCachedAccessToken(tenantId) {
+    const entry = accessTokenCache.get(normalizeTenantKey(tenantId));
+
+    if (!entry || Date.now() >= entry.expiresAt - ACCESS_TOKEN_EXPIRY_SKEW_MS) {
+        return "";
+    }
+
+    return entry.accessToken;
+}
+
+function hasAnyUsableCachedAccessToken() {
+    for (const tenantKey of accessTokenCache.keys()) {
+        if (getCachedAccessToken(tenantKey)) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+function getLatestCachedExpiry() {
+    let latest = 0;
+
+    accessTokenCache.forEach((entry) => {
+        if (entry.expiresAt > latest) {
+            latest = entry.expiresAt;
+        }
+    });
+
+    return latest;
 }
 
 function normalizeAccessToken(token) {
@@ -226,6 +340,20 @@ function normalizeAccessToken(token) {
 async function getPastedToken() {
     const result = await sessionStorageGet([SESSION_TOKEN_STORAGE_KEY]);
     return normalizeAccessToken(result[SESSION_TOKEN_STORAGE_KEY]);
+}
+
+// Held in session storage rather than a variable because the service worker unloads
+// between the failed vault call and the moment the user opens the popup.
+async function getPendingSignInTenantId() {
+    const result = await sessionStorageGet([PENDING_TENANT_STORAGE_KEY]);
+    const tenantId = result[PENDING_TENANT_STORAGE_KEY];
+    return isTenantGuid(tenantId) ? tenantId : "";
+}
+
+function setPendingSignInTenantId(tenantId) {
+    return isTenantGuid(tenantId)
+        ? sessionStorageSet({ [PENDING_TENANT_STORAGE_KEY]: tenantId })
+        : sessionStorageRemove([PENDING_TENANT_STORAGE_KEY]);
 }
 
 function base64UrlEncodeBytes(bytes) {
@@ -262,8 +390,8 @@ async function generatePkceChallenge(verifier) {
     return base64UrlEncodeBytes(new Uint8Array(digest));
 }
 
-function buildAuthorizeUrl({ redirectUri, codeChallenge, state }) {
-    const url = new URL(getAuthorityUrl("authorize"));
+function buildAuthorizeUrl({ redirectUri, codeChallenge, state, tenantId = TENANT_ID }) {
+    const url = new URL(getAuthorityUrl("authorize", tenantId));
     url.search = new URLSearchParams({
         client_id: CLIENT_ID,
         response_type: "code",
@@ -272,7 +400,10 @@ function buildAuthorizeUrl({ redirectUri, codeChallenge, state }) {
         scope: OAUTH_SCOPES,
         state,
         code_challenge: codeChallenge,
-        code_challenge_method: "S256"
+        code_challenge_method: "S256",
+        // Without this Entra silently reuses the existing session, which makes switching
+        // to an account in another tenant look successful while returning the same token.
+        prompt: "select_account"
     }).toString();
 
     return url.toString();
@@ -372,7 +503,7 @@ async function readOAuthError(response) {
     }
 }
 
-async function requestToken(parameters) {
+async function requestToken(parameters, tenantId = TENANT_ID) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     const body = new URLSearchParams({
@@ -381,7 +512,7 @@ async function requestToken(parameters) {
     });
 
     try {
-        const response = await fetchWithRetry(getAuthorityUrl("token"), {
+        const response = await fetchWithRetry(getAuthorityUrl("token", tenantId), {
             method: "POST",
             headers: {
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -407,7 +538,7 @@ async function requestToken(parameters) {
     }
 }
 
-async function saveTokenResponse(tokenResponse, fallbackRefreshToken = "", fallbackAccount = null) {
+async function saveTokenResponse(tokenResponse, requestedTenantId = TENANT_ID, fallbackRefreshToken = "", fallbackAccount = null) {
     if (!tokenResponse.access_token) {
         throw new OAuthTokenError("Token response did not include an access token", "");
     }
@@ -420,8 +551,15 @@ async function saveTokenResponse(tokenResponse, fallbackRefreshToken = "", fallb
         ? parsedAccount
         : fallbackAccount || parsedAccount;
 
-    cachedAccessToken = tokenResponse.access_token;
-    cachedAccessTokenExpiresAt = expiresAt;
+    const entry = { accessToken: tokenResponse.access_token, expiresAt };
+    accessTokenCache.set(normalizeTenantKey(requestedTenantId), entry);
+
+    // Caching under the issuing tenant too means a later request that already knows the
+    // vault's tenant can reuse a token first obtained through the "organizations" authority.
+    const issuedTenantId = parseJwtPayload(tokenResponse.access_token)?.tid || "";
+    if (isTenantGuid(issuedTenantId)) {
+        accessTokenCache.set(issuedTenantId.toLowerCase(), entry);
+    }
 
     await storageSet({
         kvAuthExpiresAt: expiresAt,
@@ -440,49 +578,58 @@ async function saveTokenResponse(tokenResponse, fallbackRefreshToken = "", fallb
     return getAuthStatus();
 }
 
-async function exchangeAuthorizationCode(code, codeVerifier, redirectUri) {
+async function exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenantId = TENANT_ID) {
     const tokenResponse = await requestToken({
         grant_type: "authorization_code",
         code,
         redirect_uri: redirectUri,
         code_verifier: codeVerifier,
         scope: OAUTH_SCOPES
-    });
+    }, tenantId);
 
-    return saveTokenResponse(tokenResponse);
+    return saveTokenResponse(tokenResponse, tenantId);
 }
 
-async function refreshAccessToken(refreshToken, fallbackAccount = null) {
+// A refresh token is bound to the account rather than to one tenant, so redeeming it
+// against another tenant's endpoint yields an access token that vault's tenant accepts,
+// provided the app has a service principal there and the account has access.
+async function refreshAccessToken(refreshToken, tenantId = TENANT_ID, fallbackAccount = null) {
     const tokenResponse = await requestToken({
         grant_type: "refresh_token",
         refresh_token: refreshToken,
         scope: OAUTH_SCOPES
-    });
+    }, tenantId);
 
-    return saveTokenResponse(tokenResponse, refreshToken, fallbackAccount);
+    return saveTokenResponse(tokenResponse, tenantId, refreshToken, fallbackAccount);
 }
 
-async function handleSignIn() {
+async function handleSignIn(requestedTenantId = "") {
     if (!isClientConfigured()) {
         throw new AuthRequiredError("Extension auth not configured");
     }
 
+    const tenantId = normalizeTenantKey(requestedTenantId);
     const redirectUri = chrome.identity.getRedirectURL();
     const codeVerifier = generatePkceVerifier();
     const codeChallenge = await generatePkceChallenge(codeVerifier);
     const state = getRandomBase64Url(16);
-    const authorizeUrl = buildAuthorizeUrl({ redirectUri, codeChallenge, state });
+    const authorizeUrl = buildAuthorizeUrl({ redirectUri, codeChallenge, state, tenantId });
     const redirectResponseUrl = await launchWebAuthFlow(authorizeUrl);
     const code = parseAuthorizationCode(redirectResponseUrl, redirectUri, state);
+    await exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenantId);
 
-    return exchangeAuthorizationCode(code, codeVerifier, redirectUri);
+    if (await getPendingSignInTenantId() === tenantId) {
+        await setPendingSignInTenantId("");
+    }
+
+    return getAuthStatus();
 }
 
 async function clearOAuthAuth() {
-    cachedAccessToken = "";
-    cachedAccessTokenExpiresAt = 0;
-    pendingAccessTokenRequest = null;
+    accessTokenCache.clear();
+    pendingAccessTokenRequests.clear();
 
+    await setPendingSignInTenantId("");
     await storageRemove([...AUTH_STORAGE_KEYS, ...LEGACY_AUTH_STORAGE_KEYS]);
 }
 
@@ -511,7 +658,8 @@ async function handleClearPastedToken() {
 async function getAuthStatus() {
     const storedAuth = await getStoredAuth();
     const manualTokenActive = Boolean(await getPastedToken());
-    const signedIn = hasUsableCachedAccessToken() || Boolean(storedAuth.refreshToken);
+    const hasCachedToken = hasAnyUsableCachedAccessToken();
+    const signedIn = hasCachedToken || Boolean(storedAuth.refreshToken);
 
     return {
         configured: isClientConfigured(),
@@ -520,57 +668,95 @@ async function getAuthStatus() {
         authenticated: signedIn || manualTokenActive,
         clientId: CLIENT_ID,
         tenantId: TENANT_ID,
+        signedInTenantId: storedAuth.tenantId,
+        pendingTenantId: await getPendingSignInTenantId(),
         account: storedAuth.account,
-        expiresAt: hasUsableCachedAccessToken() ? cachedAccessTokenExpiresAt : storedAuth.expiresAt
+        expiresAt: hasCachedToken ? getLatestCachedExpiry() : storedAuth.expiresAt
     };
 }
 
-async function getAccessToken() {
-    if (hasUsableCachedAccessToken()) {
-        return cachedAccessToken;
-    }
+function isInteractionRequiredError(error) {
+    return error instanceof OAuthTokenError
+        && (
+            error.code === "invalid_grant"
+            || error.code === "interaction_required"
+            || error.code === "login_required"
+            || error.code === "consent_required"
+        );
+}
 
-    const storedAuth = await getStoredAuth();
-    if (isClientConfigured() && storedAuth.refreshToken && !pendingAccessTokenRequest) {
-        pendingAccessTokenRequest = (async () => {
-            try {
-                await refreshAccessToken(storedAuth.refreshToken, storedAuth.account);
-                return cachedAccessToken;
-            } catch (error) {
-                if (
-                    error instanceof OAuthTokenError
-                    && (
-                        error.code === "invalid_grant"
-                        || error.code === "interaction_required"
-                        || error.code === "login_required"
-                        || error.code === "consent_required"
-                    )
-                ) {
-                    await clearOAuthAuth();
-                    throw new AuthRequiredError("Sign in required");
-                }
+// Kept synchronous up to the map insert in getAccessToken so that a burst of parallel
+// secret fetches on a cold worker shares one token request per tenant.
+function createAccessTokenRequest(tenantKey) {
+    return (async () => {
+        const storedAuth = await getStoredAuth();
 
-                console.error("[KV Ext] Token refresh failed:", error);
-                throw new AuthRequiredError(error.message || "Sign in required");
-            }
-        })().finally(() => {
-            pendingAccessTokenRequest = null;
-        });
-    }
-
-    if (pendingAccessTokenRequest) {
-        try {
-            return await pendingAccessTokenRequest;
-        } catch (error) {
-            if (!(error instanceof AuthRequiredError)) {
-                throw error;
-            }
+        if (!isClientConfigured() || !storedAuth.refreshToken) {
+            return "";
         }
+
+        try {
+            await refreshAccessToken(storedAuth.refreshToken, tenantKey, storedAuth.account);
+            return getCachedAccessToken(tenantKey);
+        } catch (error) {
+            // A code means Entra rejected the grant; an empty code means the request never
+            // got that far, such as a timeout, which says nothing about consent.
+            const isEntraRejection = error instanceof OAuthTokenError && Boolean(error.code);
+
+            if (tenantKey !== TENANT_ID) {
+                // Failing for one tenant tells us nothing about the tenant already signed
+                // in, so record it for the popup rather than dropping the whole session.
+                // Any rejection counts here: a tenant that has never consented to the app
+                // can answer with codes well outside the usual interaction-required set.
+                if (isEntraRejection) {
+                    await setPendingSignInTenantId(tenantKey);
+                    throw new AuthRequiredError(`Sign in required for tenant ${tenantKey}`);
+                }
+            } else if (isInteractionRequiredError(error)) {
+                await clearOAuthAuth();
+                throw new AuthRequiredError("Sign in required");
+            }
+
+            console.error("[KV Ext] Token refresh failed:", { tenant: tenantKey, error });
+            throw new AuthRequiredError(error.message || "Sign in required");
+        }
+    })().finally(() => {
+        pendingAccessTokenRequests.delete(tenantKey);
+    });
+}
+
+async function getAccessToken(tenantId = TENANT_ID) {
+    const tenantKey = normalizeTenantKey(tenantId);
+    const cachedToken = getCachedAccessToken(tenantKey);
+    if (cachedToken) {
+        return cachedToken;
+    }
+
+    if (!pendingAccessTokenRequests.has(tenantKey)) {
+        pendingAccessTokenRequests.set(tenantKey, createAccessTokenRequest(tenantKey));
+    }
+
+    let authError = null;
+    try {
+        const token = await pendingAccessTokenRequests.get(tenantKey);
+        if (token) {
+            return token;
+        }
+    } catch (error) {
+        if (!(error instanceof AuthRequiredError)) {
+            throw error;
+        }
+
+        authError = error;
     }
 
     const pastedToken = await getPastedToken();
     if (pastedToken) {
         return pastedToken;
+    }
+
+    if (authError) {
+        throw authError;
     }
 
     if (!isClientConfigured()) {
@@ -590,6 +776,29 @@ function isValidSecretName(secretName) {
 
 function isValidSecretVersion(version) {
     return /^[a-z0-9-]{1,64}$/i.test(version || "");
+}
+
+function isValidSecretListUrl(urlText, vaultName) {
+    try {
+        const url = new URL(urlText);
+        return url.protocol === "https:"
+            && url.hostname.toLowerCase() === `${vaultName}.vault.azure.net`.toLowerCase()
+            && url.pathname === "/secrets"
+            && url.searchParams.get("api-version") === KEY_VAULT_API_VERSION;
+    } catch {
+        return false;
+    }
+}
+
+function getSecretNameFromId(id) {
+    try {
+        const url = new URL(id);
+        const parts = url.pathname.split("/").filter(Boolean);
+        const secretsIndex = parts.findIndex((part) => part.toLowerCase() === "secrets");
+        return secretsIndex !== -1 ? parts[secretsIndex + 1] || "" : "";
+    } catch {
+        return "";
+    }
 }
 
 function wait(ms) {
@@ -621,12 +830,140 @@ async function readErrorMessage(response) {
     }
 }
 
-function getFriendlyHttpError(status, message) {
-    if (status === 401) return "Token expired or invalid";
+function getFriendlyHttpError(status, message, challengeTenantId = "") {
+    if (status === 401) {
+        return challengeTenantId ? "Wrong tenant for this vault" : "Token expired or invalid";
+    }
     if (status === 403) return "Access denied";
     if (status === 404) return "Secret not found";
     if (status === 429) return "Key Vault throttled the request";
     return message;
+}
+
+function describeVaultError(error, context) {
+    if (error instanceof AuthRequiredError) {
+        return error.message;
+    }
+
+    if (error?.name === "AbortError") {
+        return "Key Vault request timed out";
+    }
+
+    if (error instanceof OAuthTokenError) {
+        console.error("[KV Ext] Authentication failed:", error);
+        return "Authentication failed";
+    }
+
+    console.error(`[KV Ext] ${context} error:`, error);
+    return "Network error";
+}
+
+async function sendVaultRequest(url, options, accessToken) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
+    try {
+        const response = await fetchWithRetry(url, {
+            ...options,
+            headers: {
+                ...(options.headers || {}),
+                Authorization: `Bearer ${accessToken}`,
+                Accept: "application/json"
+            },
+            signal: controller.signal
+        });
+
+        if (response.ok) {
+            return { ok: true, status: response.status, data: await response.json() };
+        }
+
+        return {
+            ok: false,
+            status: response.status,
+            challengeTenantId: parseTenantFromChallenge(response.headers.get("WWW-Authenticate")),
+            message: await readErrorMessage(response)
+        };
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
+// Calls the vault with a token for its tenant. A vault whose tenant is not yet known is
+// tried with the default authority first; its 401 challenge names the tenant to use, which
+// is then cached so later calls skip the extra round trip.
+async function keyVaultRequest(vaultName, url, options = {}) {
+    const knownTenantId = await getVaultTenant(vaultName);
+    const attemptedTenantId = normalizeTenantKey(knownTenantId || TENANT_ID);
+    const result = await sendVaultRequest(url, options, await getAccessToken(attemptedTenantId));
+
+    if (result.ok || result.status !== 401) {
+        return result;
+    }
+
+    const { challengeTenantId } = result;
+    if (!challengeTenantId || challengeTenantId === attemptedTenantId) {
+        return result;
+    }
+
+    console.info("[KV Ext] Vault requires another tenant:", { vaultName, tenantId: challengeTenantId });
+    await rememberVaultTenant(vaultName, challengeTenantId);
+
+    return sendVaultRequest(url, options, await getAccessToken(challengeTenantId));
+}
+
+async function handleListSecrets(request) {
+    const vaultName = String(request.vaultName || "").trim();
+
+    if (!isValidVaultName(vaultName)) {
+        return { error: "Invalid vault name" };
+    }
+
+    const secrets = [];
+    let nextUrl = `https://${vaultName}.vault.azure.net/secrets?api-version=${KEY_VAULT_API_VERSION}&maxresults=${KEY_VAULT_SECRET_LIST_MAX_RESULTS}`;
+
+    for (let pageIndex = 0; nextUrl; pageIndex += 1) {
+        if (pageIndex >= MAX_SECRET_LIST_PAGES) {
+            return { error: "Secret list is too large" };
+        }
+
+        if (!isValidSecretListUrl(nextUrl, vaultName)) {
+            return { error: "Invalid Key Vault continuation URL" };
+        }
+
+        try {
+            const result = await keyVaultRequest(vaultName, nextUrl, { method: "GET" });
+
+            if (!result.ok) {
+                console.warn("[KV Ext] Secret list failed:", {
+                    vaultName,
+                    status: result.status,
+                    challengeTenantId: result.challengeTenantId,
+                    message: result.message
+                });
+                return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
+            }
+
+            const items = Array.isArray(result.data.value) ? result.data.value : [];
+
+            items.forEach((item) => {
+                const secretName = getSecretNameFromId(item?.id || "");
+                if (isValidSecretName(secretName)) {
+                    secrets.push({
+                        name: secretName,
+                        id: item.id || "",
+                        created: item.attributes?.created ?? null,
+                        enabled: item.attributes?.enabled ?? null
+                    });
+                }
+            });
+
+            nextUrl = result.data.nextLink || "";
+        } catch (error) {
+            return { error: describeVaultError(error, "List") };
+        }
+    }
+
+    return { secrets };
 }
 
 async function handleFetchSecret(request) {
@@ -646,59 +983,30 @@ async function handleFetchSecret(request) {
         return { error: "Invalid secret version" };
     }
 
-    let accessToken;
-    try {
-        accessToken = await getAccessToken();
-    } catch (error) {
-        if (error instanceof AuthRequiredError) {
-            return { error: error.message };
-        }
-
-        console.error("[KV Ext] Authentication failed:", error);
-        return { error: "Authentication failed" };
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     const versionPath = secretVersion ? `/${encodeURIComponent(secretVersion)}` : "";
     const url = `https://${vaultName}.vault.azure.net/secrets/${encodeURIComponent(secretName)}${versionPath}?api-version=${KEY_VAULT_API_VERSION}`;
 
     try {
-        const response = await fetchWithRetry(url, {
-            method: "GET",
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: "application/json"
-            },
-            signal: controller.signal
-        });
+        const result = await keyVaultRequest(vaultName, url, { method: "GET" });
 
-        if (!response.ok) {
-            const message = await readErrorMessage(response);
+        if (!result.ok) {
             console.warn("[KV Ext] Secret fetch failed:", {
                 vaultName,
                 secretName,
                 secretVersion,
-                status: response.status,
-                message
+                status: result.status,
+                challengeTenantId: result.challengeTenantId,
+                message: result.message
             });
-            return { error: getFriendlyHttpError(response.status, message) };
+            return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
         }
 
-        const data = await response.json();
         return {
-            value: data.value ?? "",
-            created: data.attributes?.created ?? null
+            value: result.data.value ?? "",
+            created: result.data.attributes?.created ?? null
         };
     } catch (error) {
-        if (error.name === "AbortError") {
-            return { error: "Key Vault request timed out" };
-        }
-
-        console.error("[KV Ext] Fetch error:", error);
-        return { error: "Network error" };
-    } finally {
-        clearTimeout(timeoutId);
+        return { error: describeVaultError(error, "Fetch") };
     }
 }
 
@@ -720,59 +1028,32 @@ async function handleSetSecret(request) {
         return { error: "Secret value is required" };
     }
 
-    let accessToken;
-    try {
-        accessToken = await getAccessToken();
-    } catch (error) {
-        if (error instanceof AuthRequiredError) {
-            return { error: error.message };
-        }
-
-        console.error("[KV Ext] Authentication failed:", error);
-        return { error: "Authentication failed" };
-    }
-
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     const url = `https://${vaultName}.vault.azure.net/secrets/${encodeURIComponent(secretName)}?api-version=${KEY_VAULT_API_VERSION}`;
 
     try {
-        const response = await fetchWithRetry(url, {
+        const result = await keyVaultRequest(vaultName, url, {
             method: "PUT",
-            headers: {
-                Authorization: `Bearer ${accessToken}`,
-                Accept: "application/json",
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({ value: secretValue }),
-            signal: controller.signal
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ value: secretValue })
         });
 
-        if (!response.ok) {
-            const message = await readErrorMessage(response);
+        if (!result.ok) {
             console.warn("[KV Ext] Secret set failed:", {
                 vaultName,
                 secretName,
-                status: response.status,
-                message
+                status: result.status,
+                challengeTenantId: result.challengeTenantId,
+                message: result.message
             });
-            return { error: getFriendlyHttpError(response.status, message) };
+            return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
         }
 
-        const data = await response.json();
         return {
-            value: data.value ?? "",
-            id: data.id || "",
-            created: data.attributes?.created ?? null
+            value: result.data.value ?? "",
+            id: result.data.id || "",
+            created: result.data.attributes?.created ?? null
         };
     } catch (error) {
-        if (error.name === "AbortError") {
-            return { error: "Key Vault request timed out" };
-        }
-
-        console.error("[KV Ext] Set error:", error);
-        return { error: "Network error" };
-    } finally {
-        clearTimeout(timeoutId);
+        return { error: describeVaultError(error, "Set") };
     }
 }

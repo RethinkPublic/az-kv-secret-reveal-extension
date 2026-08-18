@@ -5,8 +5,12 @@ A Chromium extension that adds inline Azure Key Vault secret values to the Azure
 It can:
 
 - reveal secret values directly in the Azure Portal list and version views;
+- load the full secret list automatically, without clicking `Load more` repeatedly;
+- filter the secret list with a search box and sort it by clicking the `Name` header;
 - show secret version creation dates in the versions view;
 - edit the current value and create a new secret version;
+- create a brand-new secret from a slide-down panel that replaces the portal's native new-secret button;
+- export and import current secret values with a plain JSON file and an import preview;
 - keep older secret versions read-only;
 - authenticate with Microsoft sign-in or a temporary pasted Key Vault access token.
 
@@ -29,8 +33,10 @@ If the signed-in user cannot access a vault in Azure, the extension cannot acces
 This extension displays and edits secrets. Treat it as privileged tooling.
 
 - Revealed secret values are visible in the page, screenshots, browser accessibility trees, and potentially screen-sharing sessions.
+- Exported JSON files contain plaintext secret values. Store and delete them with the same care as any other secret backup.
 - Any user who can use this extension with your browser profile may be able to reveal secrets that your Azure identity can access.
 - Editing the current value creates a new Key Vault secret version. It does not modify historical versions.
+- Importing an existing name creates a new active Key Vault secret version.
 - Older versions are immutable in Azure Key Vault and are shown read-only by this extension.
 - Use least privilege. Grant read/write permissions only to users who truly need them.
 - Review your organization's policy before using browser extensions with production secrets.
@@ -44,6 +50,57 @@ On a Key Vault secrets list page, the extension injects a `Value` column next to
 When hidden, values are masked.
 
 When revealed, each secret value is fetched from Key Vault and shown in an input. If you edit the current value, a subtle green check button appears at the end of the input. Pressing that button saves the value as a new secret version.
+
+### Create Secret Panel
+
+On the secrets list, the extension hides the portal's native `Generate/Import` command and puts a `Create secret` command in its place. Clicking it slides down a panel with a secret name input, a secret value input, and a `Create` button in a single row.
+
+`Create` validates the name, warns if a loaded row already uses it (a plain create would silently add a new version), then creates the secret via the Key Vault data-plane API. On success the panel closes and the list refreshes automatically. Creating secrets requires `secrets/set` permission.
+
+The native button is hidden, not removed; it comes back when the extension UI is removed from the page.
+
+### Import and Export Secrets
+
+On the secrets list, the extension adds `Export secrets` and `Import secrets` commands.
+
+`Export secrets` lists the active vault, fetches every current secret value, and downloads a plain JSON file only if every value is fetched successfully. It does not create a partial file when any secret fails.
+
+`Import secrets` reads an export JSON file, validates its schema, shows source and destination vault names, and summarizes how many imported names are new versus existing. Before confirmation, choose whether existing names receive new active versions or are skipped.
+
+Export files use this shape:
+
+```json
+{
+  "format": "azkv-secret-export",
+  "version": 1,
+  "sourceVault": "example-vault",
+  "exportedAt": "2026-07-10T20:00:00.000Z",
+  "secrets": [
+    {
+      "name": "example-secret",
+      "value": "plaintext secret value"
+    }
+  ]
+}
+```
+
+### Automatic Full List Loading
+
+The Azure Portal loads large secret lists in pages and requires clicking `Load more` repeatedly. The extension clicks the portal's `Load more` control automatically until every secret is loaded, so the full list appears without user intervention.
+
+The auto-loader is scoped to the current blade, throttles its clicks, and stops on its own if clicking no longer adds rows. It works on both the secrets list and a secret's versions view. While pages load, the extension pins the scroll position so the view does not jump toward the newly loaded rows.
+
+### Search by Secret Name
+
+A search box appears above the secrets list, aligned to the right. Typing filters the loaded rows to secrets whose name contains the text, case-insensitively. A counter next to the box shows how many secrets match (`N of M`), or the total number of loaded secrets when the box is empty.
+
+Press `Escape` or use the input's clear button to reset the filter.
+
+### Sort by Secret Name
+
+Click the `Name` column header to sort the secrets list by name: first click sorts ascending, second descending, third restores the original portal order. An arrow in the header shows the current direction.
+
+Sorting is client-side and reorders only the rows already loaded, so combined with automatic full list loading it covers the whole vault.
 
 ### Secret Versions View
 
@@ -71,7 +128,7 @@ The extension has three main parts:
 
 - `manifest.json`: declares extension permissions, host access, popup, background worker, and content script.
 - `background.js`: handles authentication and calls the Azure Key Vault data-plane API.
-- `content.js`: detects Azure Portal Key Vault grids, injects columns, renders values, and sends fetch/save requests to the background worker.
+- `content.js`: detects Azure Portal Key Vault grids, auto-loads all rows, injects columns, the search box, and the create-secret panel, handles name sorting, renders values, and sends fetch/save requests to the background worker.
 
 Data flow:
 
@@ -89,9 +146,10 @@ The extension calls:
 
 - `GET https://{vault}.vault.azure.net/secrets/{secretName}?api-version=7.4`
 - `GET https://{vault}.vault.azure.net/secrets/{secretName}/{version}?api-version=7.4`
+- `GET https://{vault}.vault.azure.net/secrets?api-version=7.4`
 - `PUT https://{vault}.vault.azure.net/secrets/{secretName}?api-version=7.4`
 
-The `PUT` call creates a new version of the secret.
+The `PUT` call creates the secret when the name is new, or a new version of an existing secret.
 
 ## Requirements
 
@@ -108,9 +166,11 @@ The extension uses delegated user permissions. It cannot independently discover,
 For reveal-only usage, the user needs permission to read secret values, such as:
 
 - `secrets/get`
-- usually `secrets/list` through portal use
+- `secrets/list`
 
-For editing current values and creating new versions, the user also needs:
+Export requires both `secrets/list` and `secrets/get`.
+
+For creating secrets, editing current values, creating new versions, and importing secrets, the user also needs:
 
 - `secrets/set`
 
@@ -132,7 +192,7 @@ The extension uses OAuth Authorization Code Flow with PKCE through `chrome.ident
 5. Add the extension redirect URI:
 
    ```text
-   https://<extension-id>.chromiumapp.org/
+   https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/
    ```
 
 6. Copy the Application client ID.
@@ -149,23 +209,58 @@ const TENANT_ID = "organizations";
 const KEY_VAULT_SCOPE = "https://vault.azure.net/.default";
 ```
 
-`organizations` allows work or school accounts. If your organization requires a single tenant, replace it with your tenant ID.
+`organizations` allows work or school accounts. It is only the starting authority; see below for how vaults in other tenants are handled.
 
-### Finding the Extension ID
+### Vaults in Multiple Tenants
 
-After loading the unpacked extension:
+Key Vault's data plane is tenant-bound. A vault only accepts an access token issued by the tenant that owns it, and rejects anything else with HTTP 401 regardless of your RBAC assignments. A single fixed authority therefore cannot serve vaults in two tenants.
+
+The extension resolves the tenant per vault:
+
+1. The first call to an unknown vault uses the `organizations` authority.
+2. If the vault rejects that token, it replies with `WWW-Authenticate: Bearer authorization="https://login.windows.net/<tenant-id>"`, naming the tenant it requires.
+3. The extension re-acquires a token from that tenant and retries the call once.
+4. The vault-to-tenant mapping is cached in `chrome.storage.local` under `kvVaultTenantMap`, so later calls go straight to the right authority.
+
+Access tokens are cached per tenant in memory. The refresh token is bound to your account rather than to one tenant, so switching tenants is usually silent and needs no extra sign-in.
+
+To use a second tenant, the app registration must be multi-tenant (`Accounts in any organizational directory`) **and** have a service principal in that tenant. The service principal is created the first time someone consents to the app there.
+
+Many tenants only allow user consent for apps from verified publishers. This app is unverified, so signing in shows `Approval required` with a justification box instead of a consent button. Enter a justification and submit it; an administrator then approves it under `Microsoft Entra ID` > `Enterprise applications` > `Admin consent requests`. That single approval creates the service principal and the extension works from then on.
+
+An administrator can also consent directly. The admin consent endpoint requires a `redirect_uri` that is already registered on the app registration, otherwise it fails with `AADSTS90097`:
+
+```text
+https://login.microsoftonline.com/<second-tenant-id>/v2.0/adminconsent
+  ?client_id=<your-client-id>
+  &scope=https://vault.azure.net/.default openid profile offline_access
+  &redirect_uri=https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/
+```
+
+Join it into one line and URL-encode the `scope` value. The administrator must hold Global Administrator, Privileged Role Administrator, or Cloud Application Administrator in that tenant; a normal user or a guest cannot grant admin consent.
+
+If a silent cross-tenant token cannot be obtained, the popup keeps its `Sign-in` button visible and explains which tenant is needed. Clicking it signs you in directly against that tenant. This is the path to use when each tenant has a separate account rather than one guest account.
+
+### Extension ID
+
+The extension ID is pinned:
+
+```text
+aobcnpejfheeceefeejkogdonmhndhcn
+```
+
+It is derived from the `key` field in `manifest.json`, which holds the base64 public key matching `bin/azkvextension.pem`. Because the ID is pinned, it stays the same whether the extension is loaded unpacked, from the `.zip`, or installed from `bin/azkvextension.crx`, and it stays the same across machines and reinstalls. One redirect URI works for every install.
+
+Do not remove or change the `key` field. Doing so changes the extension ID and breaks the Entra redirect URI, stored settings, and any policy that allowlists the extension.
+
+Keep `bin/azkvextension.pem` private and out of version control. It is the signing key for the `.crx`. Anyone with it can publish an update that Chrome accepts as this extension.
+
+Verify the ID after loading:
 
 1. Open `chrome://extensions` or `edge://extensions`.
 2. Enable developer mode.
 3. Find this extension.
-4. Copy its ID.
-5. Use that ID in the redirect URI:
-
-   ```text
-   https://<extension-id>.chromiumapp.org/
-   ```
-
-If the extension ID changes, update the redirect URI in the Entra app registration.
+4. Confirm the ID matches the value above.
 
 ## Install Locally
 
@@ -180,7 +275,7 @@ If the extension ID changes, update the redirect URI in the Entra app registrati
 ## Sign In
 
 1. Open the extension popup.
-2. Click `Sign in with Microsoft`.
+2. Click `Sign-in`.
 3. Complete Microsoft sign-in.
 4. The active Azure Portal tab reloads after auth updates.
 
@@ -224,6 +319,8 @@ If a value cannot be fetched, the injected cell shows an error such as:
 - `[Access denied]`
 - `[Secret not found]`
 - `[Token expired or invalid]`
+- `[Wrong tenant for this vault]`
+- `[Sign in required for tenant <tenant-id>]`
 - `[Key Vault request timed out]`
 
 ### Hide Secret Values
@@ -232,9 +329,22 @@ Click `Hide Key Vault Secret Values`.
 
 This masks the injected values in the grid. It does not revoke Azure tokens or clear all browser memory. To fully stop access, sign out from the popup or close the browser session.
 
+### Search and Sort the Secret List
+
+All secrets load automatically when the list opens. Use the search box above the grid to filter by name. Click the `Name` header to cycle ascending, descending, and original order.
+
 ### Resize the Value Column
 
 The injected `Value` column has a resize handle in the header. Drag it to widen or shrink the column.
+
+### Create a New Secret
+
+1. Open the `Secrets` list.
+2. Click `Create secret` in the command bar (it replaces the native `Generate/Import` button).
+3. Type the secret name and value in the slide-down panel.
+4. Click `Create` or press `Enter`.
+
+The panel shows `Creating...`, then `Created`, then closes and refreshes the list. Errors (invalid name, duplicate name, access denied) appear inline. Press `Escape` to close the panel without creating.
 
 ### Create a New Secret Version
 
@@ -249,6 +359,27 @@ The control shows:
 - `Saving...`
 - `Saved`
 - or an error message
+
+### Export Secrets
+
+1. Open the `Secrets` list.
+2. Click `Export secrets` in the command bar.
+3. Read the plaintext-file warning.
+4. Wait for listing and value fetch progress to finish.
+5. Store the downloaded JSON file securely.
+
+If any secret cannot be fetched, the extension reports the failed names and does not download a partial file.
+
+### Import Secrets
+
+1. Open the destination vault's `Secrets` list.
+2. Click `Import secrets` in the command bar.
+3. Select an export JSON file.
+4. Review the preview, including source vault, destination vault, new names, and existing names.
+5. Select `Replace existing values` or `Skip existing secrets`.
+6. Click `Import` to write the selected values.
+
+Replacing does not overwrite a historical version in place. Key Vault creates a new active version for each existing imported name. Skip mode imports only names that do not exist in the destination vault. Import errors are reported per secret, and the list is refreshed after the write attempt.
 
 ### Older Versions
 
@@ -277,6 +408,9 @@ Secret values:
 
 - Values are fetched from Key Vault and rendered into the Azure Portal DOM when revealed.
 - Values are cached in memory by the content script to avoid repeated fetches during the page session.
+- Exported values are written only to the user-downloaded JSON file.
+- Imported values are read from the selected file and sent to Key Vault; they are not intentionally written to extension local storage.
+- A secret's cached values are dropped when you leave its versions view, so new versions created there (inline or with the portal's `New Version` flow) show up in the list immediately.
 - Values are not intentionally written to extension local storage.
 
 ## Browser Permissions
@@ -306,6 +440,10 @@ Once revealed, secret values are plain text in the page. They can be seen by:
 - potentially other extensions with broad page access.
 
 Keep values hidden unless needed.
+
+### Export Files
+
+Export files are plaintext secret backups. Do not attach them to tickets, email them, commit them, or leave them in shared folders. Prefer short-lived local handling and secure deletion after use.
 
 ### Editing Production Secrets
 
@@ -372,8 +510,33 @@ Check:
 
 - the Entra app registration exists;
 - `CLIENT_ID` matches the Application client ID;
-- the redirect URI uses the current extension ID;
+- the redirect URI uses the pinned extension ID `aobcnpejfheeceefeejkogdonmhndhcn`;
+- the `key` field in `manifest.json` is intact, so the loaded extension ID matches that redirect URI;
 - the redirect URI ends with `/`.
+
+### Wrong Tenant For This Vault
+
+The vault rejected the token because it was issued by a different tenant. Sign-in succeeding elsewhere does not help: Key Vault validates the issuing tenant before it looks at your permissions, which is why this appears as 401 rather than `Access denied`.
+
+Open the popup. It names the tenant the vault requires and keeps the `Sign-in` button available; click it and complete sign-in against that tenant.
+
+If sign-in ends on `Approval required`, that tenant restricts user consent to verified publishers and the app has no service principal there yet. Submit the approval request and have an administrator approve it, or have an administrator consent directly. See [Vaults in Multiple Tenants](#vaults-in-multiple-tenants) for both paths.
+
+Until that approval lands, the pasted-token fallback reaches the other tenant without any consent, because the Azure CLI is already consented in most tenants:
+
+```bash
+az account get-access-token --tenant <second-tenant-id> --resource https://vault.azure.net --query accessToken -o tsv
+```
+
+Paste that into `Advanced: paste temporary token` in the popup. The extension uses it whenever it cannot get a token for a vault's tenant on its own, and it lasts about an hour.
+
+To confirm the mismatch, compare the tenant that owns the vault against the `tid` claim of the token in use:
+
+```bash
+az keyvault show --name <vault-name> --query properties.tenantId -o tsv
+```
+
+The background service worker console also logs `[KV Ext] Vault requires another tenant:` with the tenant the vault asked for.
 
 ### Access Denied
 
@@ -382,12 +545,23 @@ Your identity or pasted token does not have the needed Key Vault data-plane perm
 For reveal:
 
 - check `secrets/get`;
+- check `secrets/list` for export and import preview;
 - check vault firewall and network restrictions;
 - check tenant/account selection.
 
-For save:
+For save or import:
 
 - check `secrets/set`.
+
+### Import File Rejected
+
+Check:
+
+- the file is valid JSON;
+- `format` is `azkv-secret-export`;
+- `version` is `1`;
+- every secret has a valid Key Vault secret name and string `value`;
+- secret names are not duplicated case-insensitively.
 
 ### Token Expired Or Invalid
 
@@ -427,12 +601,12 @@ After editing:
 1. Go to `chrome://extensions` or `edge://extensions`.
 2. Click reload on the unpacked extension.
 3. Refresh Azure Portal.
-4. Test sign-in, reveal, hide, save, older-version read-only behavior, and popup sign-out.
+4. Test sign-in, reveal, hide, save, export, malformed import rejection, import preview/cancel, import into new and existing names, older-version read-only behavior, and popup sign-out.
 
 ## Project Files
 
 - `manifest.json`: extension metadata, permissions, content script, popup, and background service worker.
-- `background.js`: OAuth, token storage, Key Vault GET and PUT calls.
+- `background.js`: OAuth, token storage, Key Vault list, GET, and PUT calls.
 - `content.js`: Azure Portal DOM detection, injected toolbar button, grid columns, editable values, read-only older versions.
 - `popup.html`: popup UI.
 - `popup.js`: popup auth actions and status rendering.
@@ -445,7 +619,9 @@ After editing:
 - It is designed for Chromium Manifest V3 browsers.
 - It does not list or manage deleted secrets.
 - It does not edit existing historical versions because Key Vault versions are immutable.
-- It does not provide a confirmation dialog before saving a new version.
+- It does not provide a confirmation dialog before saving a new version or creating a secret.
+- The duplicate-name check on create only sees rows already loaded in the grid.
+- Export and import use plaintext JSON files by design.
 - It does not package or publish the extension to a browser store.
 - It does not replace Azure audit logs, access reviews, or formal secret-management workflows.
 

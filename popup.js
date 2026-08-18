@@ -6,6 +6,10 @@ const clearTokenButton = document.getElementById("clearTokenBtn");
 const status = document.getElementById("status");
 const accountInfo = document.getElementById("accountInfo");
 const configInfo = document.getElementById("configInfo");
+const lede = document.getElementById("lede");
+
+const DEFAULT_LEDE = lede.textContent;
+const SIGNED_IN_LEDE = "Open a Key Vault in Azure Portal, then reveal secret values from the command bar.";
 
 let currentAuthStatus = null;
 let isBusy = false;
@@ -42,6 +46,7 @@ function sendBackgroundMessage(message) {
 
 function updateButtonStates(authStatus = currentAuthStatus) {
     if (!authStatus) {
+        signInButton.hidden = false;
         signInButton.disabled = true;
         signOutButton.disabled = true;
         saveTokenButton.disabled = true;
@@ -49,6 +54,9 @@ function updateButtonStates(authStatus = currentAuthStatus) {
         return;
     }
 
+    // A signed-in user still needs this button when a vault in another tenant is pending,
+    // and a pasted token is not a sign-in, so neither case counts as signed in here.
+    signInButton.hidden = authStatus.signedIn && !authStatus.pendingTenantId;
     signInButton.disabled = isBusy || !authStatus.configured;
     signOutButton.disabled = isBusy || !authStatus.authenticated;
     saveTokenButton.disabled = isBusy;
@@ -65,17 +73,22 @@ function renderAuthStatus(authStatus) {
 
     if (!authStatus) {
         updateButtonStates(authStatus);
+        lede.textContent = DEFAULT_LEDE;
         accountInfo.textContent = "";
         configInfo.textContent = "";
         return;
     }
 
     const accountName = authStatus.account?.username || authStatus.account?.name || "";
+    const pendingTenantId = authStatus.pendingTenantId || "";
 
     updateButtonStates(authStatus);
     accountInfo.textContent = accountName ? `Account: ${accountName}` : "";
+    lede.textContent = signInButton.hidden ? SIGNED_IN_LEDE : DEFAULT_LEDE;
 
-    if (authStatus.signedIn && authStatus.manualTokenActive) {
+    if (pendingTenantId) {
+        showStatus(`A vault you opened belongs to tenant ${pendingTenantId}. Sign in to that tenant to read its secrets.`, true);
+    } else if (authStatus.signedIn && authStatus.manualTokenActive) {
         showStatus("Signed in. Temporary fallback token also saved.");
     } else if (authStatus.signedIn) {
         tokenInput.value = "";
@@ -132,10 +145,7 @@ async function loadAuthStatus() {
         renderAuthStatus(await sendBackgroundMessage({ action: "getAuthStatus" }));
     } catch (error) {
         currentAuthStatus = null;
-        signInButton.disabled = true;
-        signOutButton.disabled = true;
-        saveTokenButton.disabled = true;
-        clearTokenButton.disabled = true;
+        updateButtonStates(null);
         showStatus(`Could not load auth status: ${error.message}`, true);
     }
 }
@@ -145,7 +155,10 @@ signInButton.addEventListener("click", async () => {
     showStatus("Opening Microsoft sign-in...");
 
     try {
-        renderAuthStatus(await sendBackgroundMessage({ action: "signIn" }));
+        renderAuthStatus(await sendBackgroundMessage({
+            action: "signIn",
+            tenantId: currentAuthStatus?.pendingTenantId || ""
+        }));
         await reloadActiveAzurePortalTab(
             "Signed in. Azure Portal refreshed.",
             "Signed in. Switch to Azure Portal and refresh."
