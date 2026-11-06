@@ -538,6 +538,22 @@ az keyvault show --name <vault-name> --query properties.tenantId -o tsv
 
 The background service worker console also logs `[KV Ext] Vault requires another tenant:` with the tenant the vault asked for.
 
+### Tenant Rejected The Extension (AADSTS Codes)
+
+Errors from Entra now carry their `AADSTS` code, in the grid cell and in the popup. These codes come from the app registration or the tenant's policy, so signing in again does not clear them:
+
+| Code | Meaning | Fix (admin) |
+|---|---|---|
+| `AADSTS7000119` | App registration's `Allow only certain tenants` list does not include this tenant | Add the tenant ID under app registration > `Authentication` > `Supported account types`, or allow all tenants |
+| `AADSTS50194` | App registration is single-tenant | Set `Supported account types` to multiple Entra ID tenants |
+| `AADSTS700016` | App has no service principal in this tenant | Grant admin consent in this tenant |
+| `AADSTS65001`, `AADSTS90094`, `AADSTS90095` | Consent missing; users may not consent themselves | Grant admin consent, or approve the pending admin consent request |
+| `AADSTS50105` | `Assignment required` is on and the user is not assigned | Assign the user or group to the enterprise app |
+| `AADSTS53000`, `AADSTS53003` | Blocked by Conditional Access | Adjust the policy or use a compliant device |
+| `AADSTS50020` | The account is not a member or guest of this tenant | Sign in with an account from this tenant, or invite the account as a guest |
+
+When Entra shows the error on its own page, the sign-in window does not return it to the extension. Copy the error code and the `Troubleshooting details` (Request ID, Correlation ID, Timestamp) before closing the window.
+
 ### Access Denied
 
 Your identity or pasted token does not have the needed Key Vault data-plane permission.

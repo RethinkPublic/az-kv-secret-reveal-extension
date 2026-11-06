@@ -39,7 +39,23 @@ const AUTH_STORAGE_KEYS = [
 const VAULT_TENANT_STORAGE_KEY = "kvVaultTenantMap";
 const SESSION_TOKEN_STORAGE_KEY = "kvSessionToken";
 const PENDING_TENANT_STORAGE_KEY = "kvPendingTenantId";
+const PENDING_TENANT_REASON_STORAGE_KEY = "kvPendingTenantReason";
 const LEGACY_AUTH_STORAGE_KEYS = ["kvToken"];
+
+// Entra errors that come from the app registration or the tenant's policy rather than
+// from the user's session; signing in again cannot clear them, so the code must be shown.
+const AADSTS_HINTS = {
+    50020: "Account is not a member or guest of this tenant",
+    50105: "Account is not assigned to this app in this tenant",
+    50194: "App registration is single-tenant",
+    53000: "Blocked by Conditional Access (device not compliant)",
+    53003: "Blocked by Conditional Access",
+    65001: "App has no consent in this tenant",
+    90094: "Admin consent required in this tenant",
+    90095: "Admin approval required in this tenant",
+    700016: "App is not registered or consented in this tenant",
+    7000119: "App registration does not allow this tenant"
+};
 
 // Access tokens stay in memory only; the refresh token is the sole persisted credential.
 const accessTokenCache = new Map();
@@ -126,11 +142,26 @@ class AuthRequiredError extends Error {
 }
 
 class OAuthTokenError extends Error {
-    constructor(message, code) {
+    constructor(message, code, aadstsCode = 0) {
         super(message);
         this.name = "OAuthTokenError";
         this.code = code;
+        this.aadstsCode = aadstsCode;
     }
+}
+
+function parseAadstsCode(body) {
+    const listed = Array.isArray(body?.error_codes) ? Number(body.error_codes[0]) : 0;
+    if (listed) {
+        return listed;
+    }
+
+    const match = /AADSTS(\d+)/.exec(String(body?.error_description || ""));
+    return match ? Number(match[1]) : 0;
+}
+
+function formatAadsts(aadstsCode) {
+    return aadstsCode ? ` (AADSTS${aadstsCode})` : "";
 }
 
 function isClientConfigured() {
@@ -350,10 +381,15 @@ async function getPendingSignInTenantId() {
     return isTenantGuid(tenantId) ? tenantId : "";
 }
 
-function setPendingSignInTenantId(tenantId) {
+async function getPendingSignInReason() {
+    const result = await sessionStorageGet([PENDING_TENANT_REASON_STORAGE_KEY]);
+    return String(result[PENDING_TENANT_REASON_STORAGE_KEY] || "");
+}
+
+function setPendingSignInTenantId(tenantId, reason = "") {
     return isTenantGuid(tenantId)
-        ? sessionStorageSet({ [PENDING_TENANT_STORAGE_KEY]: tenantId })
-        : sessionStorageRemove([PENDING_TENANT_STORAGE_KEY]);
+        ? sessionStorageSet({ [PENDING_TENANT_STORAGE_KEY]: tenantId, [PENDING_TENANT_REASON_STORAGE_KEY]: reason })
+        : sessionStorageRemove([PENDING_TENANT_STORAGE_KEY, PENDING_TENANT_REASON_STORAGE_KEY]);
 }
 
 function base64UrlEncodeBytes(bytes) {
@@ -415,7 +451,12 @@ function launchWebAuthFlow(url) {
             const runtimeError = chrome.runtime.lastError;
 
             if (runtimeError) {
-                reject(new Error(runtimeError.message || "Sign-in cancelled or failed"));
+                // Entra shows most tenant and consent errors on its own page and never
+                // redirects, so Chrome only reports that the window was closed.
+                const message = runtimeError.message || "";
+                reject(new Error(/did not approve|closed/i.test(message)
+                    ? "Sign-in window closed. If Microsoft showed an error, note its AADSTS code and Correlation ID."
+                    : message || "Sign-in cancelled or failed"));
                 return;
             }
 
@@ -478,15 +519,16 @@ function getAccountMetadata(tokenResponse) {
     };
 }
 
-function getFriendlyOAuthError(code, description) {
-    if (code === "invalid_client") return "Invalid extension client ID";
+function getFriendlyOAuthError(code, description, aadstsCode = 0) {
+    if (AADSTS_HINTS[aadstsCode]) return `${AADSTS_HINTS[aadstsCode]}${formatAadsts(aadstsCode)}`;
+    if (code === "invalid_client") return `Invalid extension client ID${formatAadsts(aadstsCode)}`;
     if (
         code === "invalid_grant"
         || code === "interaction_required"
         || code === "login_required"
         || code === "consent_required"
     ) {
-        return "Sign in required";
+        return `Sign in required${formatAadsts(aadstsCode)}`;
     }
 
     return description || code || "Token request failed";
@@ -497,7 +539,11 @@ async function readOAuthError(response) {
         const body = await response.json();
         const code = body?.error || "";
         const description = body?.error_description || body?.error_uri || "";
-        return new OAuthTokenError(getFriendlyOAuthError(code, description), code);
+        const aadstsCode = parseAadstsCode(body);
+        if (description) {
+            console.warn("[KV Ext] Entra token error:", { code, description });
+        }
+        return new OAuthTokenError(getFriendlyOAuthError(code, description, aadstsCode), code, aadstsCode);
     } catch {
         return new OAuthTokenError(`Token request failed with HTTP ${response.status}`, "");
     }
@@ -670,6 +716,7 @@ async function getAuthStatus() {
         tenantId: TENANT_ID,
         signedInTenantId: storedAuth.tenantId,
         pendingTenantId: await getPendingSignInTenantId(),
+        pendingTenantReason: await getPendingSignInReason(),
         account: storedAuth.account,
         expiresAt: hasCachedToken ? getLatestCachedExpiry() : storedAuth.expiresAt
     };
@@ -709,12 +756,15 @@ function createAccessTokenRequest(tenantKey) {
                 // Any rejection counts here: a tenant that has never consented to the app
                 // can answer with codes well outside the usual interaction-required set.
                 if (isEntraRejection) {
-                    await setPendingSignInTenantId(tenantKey);
-                    throw new AuthRequiredError(`Sign in required for tenant ${tenantKey}`);
+                    const reason = AADSTS_HINTS[error.aadstsCode] ? error.message : "";
+                    await setPendingSignInTenantId(tenantKey, reason);
+                    throw new AuthRequiredError(reason
+                        ? `${reason} for tenant ${tenantKey}`
+                        : `Sign in required for tenant ${tenantKey}${formatAadsts(error.aadstsCode)}`);
                 }
             } else if (isInteractionRequiredError(error)) {
                 await clearOAuthAuth();
-                throw new AuthRequiredError("Sign in required");
+                throw new AuthRequiredError(`Sign in required${formatAadsts(error.aadstsCode)}`);
             }
 
             console.error("[KV Ext] Token refresh failed:", { tenant: tenantKey, error });
