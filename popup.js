@@ -1,8 +1,5 @@
 const signInButton = document.getElementById("signInBtn");
 const signOutButton = document.getElementById("signOutBtn");
-const tokenInput = document.getElementById("tokenInput");
-const saveTokenButton = document.getElementById("saveTokenBtn");
-const clearTokenButton = document.getElementById("clearTokenBtn");
 const status = document.getElementById("status");
 const accountInfo = document.getElementById("accountInfo");
 const configInfo = document.getElementById("configInfo");
@@ -49,18 +46,13 @@ function updateButtonStates(authStatus = currentAuthStatus) {
         signInButton.hidden = false;
         signInButton.disabled = true;
         signOutButton.disabled = true;
-        saveTokenButton.disabled = true;
-        clearTokenButton.disabled = true;
         return;
     }
 
-    // A signed-in user still needs this button when a vault in another tenant is pending,
-    // and a pasted token is not a sign-in, so neither case counts as signed in here.
+    // A signed-in user still needs this button when a vault in another tenant is pending.
     signInButton.hidden = authStatus.signedIn && !authStatus.pendingTenantId;
     signInButton.disabled = isBusy || !authStatus.configured;
-    signOutButton.disabled = isBusy || !authStatus.authenticated;
-    saveTokenButton.disabled = isBusy;
-    clearTokenButton.disabled = isBusy || !authStatus.manualTokenActive;
+    signOutButton.disabled = isBusy || !authStatus.signedIn;
 }
 
 function setBusy(nextBusy) {
@@ -91,13 +83,8 @@ function renderAuthStatus(authStatus) {
     } else if (pendingTenantId) {
         const code = authStatus.pendingTenantAadstsCode ? ` (AADSTS${authStatus.pendingTenantAadstsCode})` : "";
         showStatus(`A vault you opened belongs to tenant ${pendingTenantId}${code}. Sign in to that tenant to read its secrets.`, true);
-    } else if (authStatus.signedIn && authStatus.manualTokenActive) {
-        showStatus("Signed in. Temporary fallback token also saved.");
     } else if (authStatus.signedIn) {
-        tokenInput.value = "";
         showStatus("Signed in.");
-    } else if (authStatus.manualTokenActive) {
-        showStatus("Using pasted token for this browser session.");
     } else if (!authStatus.configured) {
         showStatus("Configure CLIENT_ID in background.js before signing in.", true);
     } else {
@@ -186,45 +173,6 @@ signOutButton.addEventListener("click", async () => {
         );
     } catch (error) {
         showStatus(error.message || "Sign-out failed.", true);
-    } finally {
-        setBusy(false);
-    }
-});
-
-saveTokenButton.addEventListener("click", async () => {
-    setBusy(true);
-    showStatus("Saving temporary token...");
-
-    try {
-        renderAuthStatus(await sendBackgroundMessage({
-            action: "savePastedToken",
-            token: tokenInput.value
-        }));
-        tokenInput.value = "";
-        await reloadActiveAzurePortalTab(
-            "Temporary token saved. Azure Portal refreshed.",
-            "Temporary token saved. Switch to Azure Portal and refresh."
-        );
-    } catch (error) {
-        showStatus(error.message || "Could not save token.", true);
-    } finally {
-        setBusy(false);
-    }
-});
-
-clearTokenButton.addEventListener("click", async () => {
-    setBusy(true);
-    showStatus("Clearing temporary token...");
-
-    try {
-        renderAuthStatus(await sendBackgroundMessage({ action: "clearPastedToken" }));
-        tokenInput.value = "";
-        await reloadActiveAzurePortalTab(
-            "Temporary token cleared. Azure Portal refreshed.",
-            "Temporary token cleared. Switch to Azure Portal and refresh."
-        );
-    } catch (error) {
-        showStatus(error.message || "Could not clear token.", true);
     } finally {
         setBusy(false);
     }

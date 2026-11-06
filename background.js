@@ -38,7 +38,6 @@ const AUTH_STORAGE_KEYS = [
     "kvAuthTenantId"
 ];
 const VAULT_TENANT_STORAGE_KEY = "kvVaultTenantMap";
-const SESSION_TOKEN_STORAGE_KEY = "kvSessionToken";
 const PENDING_TENANT_STORAGE_KEY = "kvPendingTenantId";
 const PENDING_TENANT_REASON_STORAGE_KEY = "kvPendingTenantReason";
 const PENDING_TENANT_AADSTS_STORAGE_KEY = "kvPendingTenantAadsts";
@@ -47,7 +46,9 @@ const PENDING_TENANT_STORAGE_KEYS = [
     PENDING_TENANT_REASON_STORAGE_KEY,
     PENDING_TENANT_AADSTS_STORAGE_KEY
 ];
+// Tokens stored by earlier versions; only ever deleted, never read.
 const LEGACY_AUTH_STORAGE_KEYS = ["kvToken"];
+const LEGACY_SESSION_STORAGE_KEYS = ["kvSessionToken"];
 
 // Entra errors that come from the app registration or the tenant's policy rather than
 // from the user's session; signing in again cannot clear them, so the code must be shown.
@@ -75,6 +76,15 @@ function isPortalContentScript(sender) {
         && typeof sender.url === "string"
         && sender.url.startsWith("https://portal.azure.com/");
 }
+
+chrome.runtime.onInstalled.addListener(() => {
+    Promise.all([
+        storageRemove(LEGACY_AUTH_STORAGE_KEYS),
+        sessionStorageRemove(LEGACY_SESSION_STORAGE_KEYS)
+    ]).catch((error) => {
+        console.warn("[KV Ext] Legacy token cleanup failed:", error);
+    });
+});
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || typeof request.action !== "string") {
@@ -118,16 +128,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     if (request.action === "signOut") {
         handleAsyncMessage(handleSignOut(), sendResponse);
-        return true;
-    }
-
-    if (request.action === "savePastedToken") {
-        handleAsyncMessage(handleSavePastedToken(request.token), sendResponse);
-        return true;
-    }
-
-    if (request.action === "clearPastedToken") {
-        handleAsyncMessage(handleClearPastedToken(), sendResponse);
         return true;
     }
 
@@ -376,15 +376,6 @@ function getLatestCachedExpiry() {
     });
 
     return latest;
-}
-
-function normalizeAccessToken(token) {
-    return String(token || "").trim().replace(/^Bearer\s+/i, "").trim();
-}
-
-async function getPastedToken() {
-    const result = await sessionStorageGet([SESSION_TOKEN_STORAGE_KEY]);
-    return normalizeAccessToken(result[SESSION_TOKEN_STORAGE_KEY]);
 }
 
 // Held in session storage rather than a variable because the service worker unloads
@@ -706,38 +697,17 @@ async function clearOAuthAuth() {
 
 async function handleSignOut() {
     await clearOAuthAuth();
-    await sessionStorageRemove([SESSION_TOKEN_STORAGE_KEY]);
-    return getAuthStatus();
-}
-
-async function handleSavePastedToken(token) {
-    const normalizedToken = normalizeAccessToken(token);
-    if (!normalizedToken) {
-        throw new AuthRequiredError("Paste a token first");
-    }
-
-    await sessionStorageSet({ [SESSION_TOKEN_STORAGE_KEY]: normalizedToken });
-    await storageRemove(LEGACY_AUTH_STORAGE_KEYS);
-    return getAuthStatus();
-}
-
-async function handleClearPastedToken() {
-    await sessionStorageRemove([SESSION_TOKEN_STORAGE_KEY]);
     return getAuthStatus();
 }
 
 async function getAuthStatus() {
     const storedAuth = await getStoredAuth();
-    const manualTokenActive = Boolean(await getPastedToken());
     const hasCachedToken = hasAnyUsableCachedAccessToken();
-    const signedIn = hasCachedToken || Boolean(storedAuth.refreshToken);
     const pendingSignIn = await getPendingSignIn();
 
     return {
         configured: isClientConfigured(),
-        signedIn,
-        manualTokenActive,
-        authenticated: signedIn || manualTokenActive,
+        signedIn: hasCachedToken || Boolean(storedAuth.refreshToken),
         clientId: CLIENT_ID,
         tenantId: TENANT_ID,
         signedInTenantId: storedAuth.tenantId,
@@ -813,27 +783,9 @@ async function getAccessToken(tenantId = TENANT_ID) {
         pendingAccessTokenRequests.set(tenantKey, createAccessTokenRequest(tenantKey));
     }
 
-    let authError = null;
-    try {
-        const token = await pendingAccessTokenRequests.get(tenantKey);
-        if (token) {
-            return token;
-        }
-    } catch (error) {
-        if (!(error instanceof AuthRequiredError)) {
-            throw error;
-        }
-
-        authError = error;
-    }
-
-    const pastedToken = await getPastedToken();
-    if (pastedToken) {
-        return pastedToken;
-    }
-
-    if (authError) {
-        throw authError;
+    const token = await pendingAccessTokenRequests.get(tenantKey);
+    if (token) {
+        return token;
     }
 
     if (!isClientConfigured()) {

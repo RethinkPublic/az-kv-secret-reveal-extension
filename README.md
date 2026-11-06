@@ -12,17 +12,17 @@ It can:
 - create a brand-new secret from a slide-down panel that replaces the portal's native new-secret button;
 - export and import current secret values with a plain JSON file and an import preview;
 - keep older secret versions read-only;
-- authenticate with Microsoft sign-in or a temporary pasted Key Vault access token.
+- authenticate with Microsoft sign-in.
 
 This project is intended for users who already have valid Azure RBAC access to the target Key Vault. It does not bypass Azure permissions.
 
 ## Access Model
 
-The extension cannot read, list, or update secrets by itself. Without a valid Microsoft Entra user session or pasted Key Vault access token, it is non-operable.
+The extension cannot read, list, or update secrets by itself. Without a valid Microsoft Entra user session, it is non-operable.
 
 Access depends on all of the following:
 
-- a valid Microsoft Entra identity or temporary bearer token;
+- a valid Microsoft Entra identity;
 - Azure RBAC data-plane permissions on the watched Key Vault;
 - network access from the browser environment to Azure Portal and the target Key Vault endpoint.
 
@@ -117,10 +117,7 @@ The extension adds a `Show Key Vault Secret Values` button to the Azure Portal c
 
 ### Authentication
 
-The popup supports two auth modes:
-
-- Microsoft sign-in using the extension's Entra application registration.
-- Advanced fallback: paste a temporary Key Vault access token from Azure CLI.
+The popup signs you in with Microsoft using the extension's Entra application registration.
 
 ## How It Works
 
@@ -156,12 +153,12 @@ The `PUT` call creates the secret when the name is new, or a new version of an e
 - Google Chrome, Microsoft Edge, or another Chromium browser that supports Manifest V3.
 - Access to `https://portal.azure.com`.
 - Network access to the target Key Vault endpoint, including any firewall or private endpoint requirements.
-- Azure Key Vault data-plane permissions for the signed-in Microsoft Entra user or pasted token.
-- An Entra application registration for OAuth sign-in, unless you only use pasted temporary tokens.
+- Azure Key Vault data-plane permissions for the signed-in Microsoft Entra user.
+- An Entra application registration for OAuth sign-in.
 
 ## Azure Permissions
 
-The extension uses delegated user permissions. It cannot independently discover, list, read, or write Key Vault secrets without an authenticated user or token that Azure accepts.
+The extension uses delegated user permissions. It cannot independently discover, list, read, or write Key Vault secrets without a signed-in user that Azure accepts.
 
 For reveal-only usage, the user needs permission to read secret values, such as:
 
@@ -296,25 +293,6 @@ If sign-in is not configured, the popup shows:
 Configure CLIENT_ID in background.js before signing in.
 ```
 
-## Temporary Token Mode
-
-The popup has an advanced option to paste a temporary Key Vault token.
-
-Generate one with Azure CLI:
-
-```powershell
-az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv
-```
-
-Paste it into the popup and click `Use pasted token`.
-
-Notes:
-
-- This is a fallback for local testing or special environments.
-- The token is stored in `chrome.storage.session`.
-- The popup text says the token is valid for about 30 minutes.
-- Clear it from the popup when you are done.
-
 ## Usage Guide
 
 ### Reveal Secret Values
@@ -406,14 +384,11 @@ To restore or reuse an older value:
 
 The extension stores auth-related data, not secret values.
 
-OAuth mode:
+Sign-in:
 
 - Refresh token and account metadata are stored in `chrome.storage.local`.
-- Access token is cached in the background service worker memory.
-
-Temporary token mode:
-
-- Pasted token is stored in `chrome.storage.session`.
+- Access tokens are cached in the background service worker memory.
+- Tokens left in storage by earlier versions, including the removed pasted-token option, are deleted when the extension is installed or updated.
 
 Secret values:
 
@@ -428,7 +403,7 @@ Secret values:
 
 The manifest requests:
 
-- `storage`: store auth state and temporary token state.
+- `storage`: store sign-in state and the vault-to-tenant map.
 - `identity`: run Microsoft sign-in through browser identity APIs.
 
 Host permissions:
@@ -489,12 +464,6 @@ Recommended:
 - sign out when done;
 - remove the extension when no longer needed.
 
-### Manual Tokens
-
-Pasted tokens are bearer tokens. Anyone with the token can use it until it expires.
-
-Do not paste tokens into chat, tickets, docs, or logs.
-
 ## Troubleshooting
 
 ### Button Does Not Appear
@@ -532,15 +501,7 @@ Open the popup. It names the tenant the vault requires and keeps the `Sign-in` b
 
 If sign-in ends on `Approval required`, that tenant restricts user consent to verified publishers and the app has no service principal there yet. Submit the approval request and have an administrator approve it, or have an administrator consent directly. See [Vaults in Multiple Tenants](#vaults-in-multiple-tenants) for both paths.
 
-Until that approval lands, the pasted-token fallback reaches the other tenant without any consent, because the Azure CLI is already consented in most tenants:
-
-```bash
-az account get-access-token --tenant <second-tenant-id> --resource https://vault.azure.net --query accessToken -o tsv
-```
-
-Paste that into `Advanced: paste temporary token` in the popup. The extension uses it whenever it cannot get a token for a vault's tenant on its own, and it lasts about an hour.
-
-To confirm the mismatch, compare the tenant that owns the vault against the `tid` claim of the token in use:
+To confirm the mismatch, compare the tenant that owns the vault against the `token from` tenant in the error:
 
 ```bash
 az keyvault show --name <vault-name> --query properties.tenantId -o tsv
@@ -566,7 +527,7 @@ When Entra shows the error on its own page, the sign-in window does not return i
 
 ### Access Denied
 
-Your identity or pasted token does not have the needed Key Vault data-plane permission.
+Your identity does not have the needed Key Vault data-plane permission.
 
 For reveal:
 
@@ -591,7 +552,7 @@ Check:
 
 ### Token Rejected
 
-The vault returned 401 for a token from its own tenant. The Key Vault message after `Token rejected:` gives the reason, such as an expired token. Sign in again or refresh the pasted token.
+The vault returned 401 for a token from its own tenant. The Key Vault message after `Token rejected:` gives the reason, such as an expired token. Sign in again.
 
 ### Key Vault Request Timed Out
 
@@ -661,7 +622,7 @@ Permission justifications:
 
 | Permission | Justification |
 |---|---|
-| `storage` | Stores the Microsoft sign-in refresh token, account name, and a map of vault name to tenant ID so the user does not sign in on every visit. A pasted temporary token is kept only in session storage. |
+| `storage` | Stores the Microsoft sign-in refresh token, account name, and a map of vault name to tenant ID so the user does not sign in on every visit. |
 | `identity` | Runs Microsoft Entra sign-in (OAuth authorization code with PKCE) through `chrome.identity.launchWebAuthFlow`. |
 | `https://portal.azure.com/*` | Adds the reveal, edit, create, search, export, and import controls to the Azure Portal Key Vault secrets pages, and lets the popup reload the active portal tab after sign-in. |
 | `https://*.vault.azure.net/*` | Reads, lists, and writes secrets with the Azure Key Vault REST API for the vault the user has open. |
