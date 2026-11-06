@@ -899,9 +899,14 @@ async function readErrorMessage(response) {
     }
 }
 
-function getFriendlyHttpError(status, message, challengeTenantId = "") {
+// Key Vault sends its tenant challenge on every 401, so the challenge alone does not mean
+// the tenant was wrong; only a token from a different tenant does.
+function getFriendlyHttpError({ status, message, challengeTenantId = "", tokenTenantId = "" }) {
     if (status === 401) {
-        return challengeTenantId ? "Wrong tenant for this vault" : "Token expired or invalid";
+        if (challengeTenantId && challengeTenantId !== tokenTenantId) {
+            return `Wrong tenant for this vault: token from ${tokenTenantId || "unknown tenant"}, vault needs ${challengeTenantId}`;
+        }
+        return `Token rejected: ${message}`;
     }
     if (status === 403) return "Access denied";
     if (status === 404) return "Secret not found";
@@ -950,6 +955,7 @@ async function sendVaultRequest(url, options, accessToken) {
             ok: false,
             status: response.status,
             challengeTenantId: parseTenantFromChallenge(response.headers.get("WWW-Authenticate")),
+            tokenTenantId: String(parseJwtPayload(accessToken)?.tid || "").toLowerCase(),
             message: await readErrorMessage(response)
         };
     } finally {
@@ -1007,9 +1013,10 @@ async function handleListSecrets(request) {
                     vaultName,
                     status: result.status,
                     challengeTenantId: result.challengeTenantId,
+                    tokenTenantId: result.tokenTenantId,
                     message: result.message
                 });
-                return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
+                return { error: getFriendlyHttpError(result) };
             }
 
             const items = Array.isArray(result.data.value) ? result.data.value : [];
@@ -1065,9 +1072,10 @@ async function handleFetchSecret(request) {
                 secretVersion,
                 status: result.status,
                 challengeTenantId: result.challengeTenantId,
+                tokenTenantId: result.tokenTenantId,
                 message: result.message
             });
-            return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
+            return { error: getFriendlyHttpError(result) };
         }
 
         return {
@@ -1112,9 +1120,10 @@ async function handleSetSecret(request) {
                 secretName,
                 status: result.status,
                 challengeTenantId: result.challengeTenantId,
+                tokenTenantId: result.tokenTenantId,
                 message: result.message
             });
-            return { error: getFriendlyHttpError(result.status, result.message, result.challengeTenantId) };
+            return { error: getFriendlyHttpError(result) };
         }
 
         return {

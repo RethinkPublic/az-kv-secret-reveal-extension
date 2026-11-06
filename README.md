@@ -318,8 +318,8 @@ If a value cannot be fetched, the injected cell shows an error such as:
 
 - `[Access denied]`
 - `[Secret not found]`
-- `[Token expired or invalid]`
-- `[Wrong tenant for this vault]`
+- `[Token rejected: <Key Vault message>]`
+- `[Wrong tenant for this vault: token from <tenant-id>, vault needs <tenant-id>]`
 - `[Sign in required for tenant <tenant-id>]`
 - `[Key Vault request timed out]`
 
@@ -579,9 +579,9 @@ Check:
 - every secret has a valid Key Vault secret name and string `value`;
 - secret names are not duplicated case-insensitively.
 
-### Token Expired Or Invalid
+### Token Rejected
 
-Sign in again or refresh the pasted token.
+The vault returned 401 for a token from its own tenant. The Key Vault message after `Token rejected:` gives the reason, such as an expired token. Sign in again or refresh the pasted token.
 
 ### Key Vault Request Timed Out
 
