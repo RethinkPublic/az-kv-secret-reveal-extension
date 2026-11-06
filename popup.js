@@ -86,8 +86,11 @@ function renderAuthStatus(authStatus) {
     accountInfo.textContent = accountName ? `Account: ${accountName}` : "";
     lede.textContent = signInButton.hidden ? SIGNED_IN_LEDE : DEFAULT_LEDE;
 
-    if (pendingTenantId) {
-        showStatus(`A vault you opened belongs to tenant ${pendingTenantId}. Sign in to that tenant to read its secrets.`, true);
+    if (pendingTenantId && authStatus.pendingTenantReason) {
+        showStatus(`A vault you opened belongs to tenant ${pendingTenantId}, which rejected this extension: ${authStatus.pendingTenantReason}. A tenant admin may need to fix this; signing in again may not help.`, true);
+    } else if (pendingTenantId) {
+        const code = authStatus.pendingTenantAadstsCode ? ` (AADSTS${authStatus.pendingTenantAadstsCode})` : "";
+        showStatus(`A vault you opened belongs to tenant ${pendingTenantId}${code}. Sign in to that tenant to read its secrets.`, true);
     } else if (authStatus.signedIn && authStatus.manualTokenActive) {
         showStatus("Signed in. Temporary fallback token also saved.");
     } else if (authStatus.signedIn) {
