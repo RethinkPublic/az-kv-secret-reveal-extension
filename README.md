@@ -671,12 +671,14 @@ Remote code: answer `No`. All scripts are in the package; the extension only cal
 
 Data usage disclosures (Privacy practices tab):
 
-- Check `Authentication information` (Microsoft refresh and access tokens) and `Personally identifiable information` (the account UPN or email from the token, shown in the popup).
-- Check `Website content` (Key Vault secret names and values shown on the page).
-- Certify that data is not sold, not used or transferred for purposes unrelated to the single purpose, and not used for credit decisions.
-- State that data goes only to Microsoft (`login.microsoftonline.com`, `*.vault.azure.net`) and is never sent to the developer or third parties. Secret values stay in page memory and are written to disk only when the user exports a file.
+- Check `Personally identifiable information` (display name, username or UPN, Entra object ID, and tenant ID from the token).
+- Check `Authentication information` (Microsoft refresh and access tokens; secret values can be credentials too).
+- Check `Website content` (Key Vault secret names and values, and the Azure Portal page address and title).
+- Leave the other categories unchecked.
+- Certify all three: data is not sold or transferred outside the approved use cases, not used or transferred for purposes unrelated to the single purpose, and not used for credit or lending decisions.
+- Data goes only to Microsoft (`login.microsoftonline.com`, `*.vault.azure.net`) and is never sent to the developer or third parties. Secret values stay in page memory and are written to disk only when the user exports a file.
 
-Privacy policy: required because the extension handles authentication data and secret values. Publish a page (for example in a public repo or company site) that says what is stored (refresh token, account metadata, vault-to-tenant map in `chrome.storage.local`; pasted token in `chrome.storage.session`), that secret values are not stored by the extension, that data is only sent to Microsoft endpoints, and how to remove it (sign out or uninstall). Put its URL in the `Privacy practices` tab.
+Privacy policy: [`PRIVACY.md`](PRIVACY.md). [`docs/privacy.html`](docs/privacy.html) is the same text as a standalone page for hosting. Fill in the `{{EFFECTIVE_DATE}}` and `{{CONTACT_EMAIL}}` placeholders in both, publish the HTML at a public URL, and put that URL in the `Privacy practices` tab. When a change affects what data the extension handles, stores, or sends, update both files and the disclosures above in the same change. Neither file goes into the store ZIP.
 
 Listing assets:
 
@@ -696,6 +698,8 @@ Reviewer notes: reviewers cannot sign in to your tenant. Explain that the extens
 - `popup.js`: popup auth actions and status rendering.
 - `icons/`: extension icons. `icon512.png` is not packaged; use it for store artwork.
 - `scripts/package.mjs`: builds the Chrome Web Store ZIP.
+- `PRIVACY.md`: privacy policy for the Chrome Web Store listing.
+- `docs/privacy.html`: the privacy policy as a standalone page for GitHub Pages or another host.
 
 ## Known Limitations
 
