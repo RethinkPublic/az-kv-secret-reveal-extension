@@ -43,6 +43,16 @@ function manifestReferencedFiles(manifest) {
     return files;
 }
 
+function isValidExtensionVersion(version) {
+    if (typeof version !== "string") {
+        return false;
+    }
+    const parts = version.split(".");
+    return parts.length <= 4
+        && parts.every((part) => /^(0|[1-9]\d{0,4})$/.test(part) && Number(part) <= 65535)
+        && parts.some((part) => part !== "0");
+}
+
 function buildStoreManifest() {
     const manifest = JSON.parse(readFileSync(join(ROOT, "manifest.json"), "utf8"));
 
@@ -50,10 +60,13 @@ function buildStoreManifest() {
         delete manifest[field];
     }
 
-    if (!/^\d{1,9}(\.\d{1,9}){0,3}$/.test(manifest.version ?? "")) {
-        fail(`manifest version "${manifest.version}" must be 1-4 dot-separated integers`);
+    if (!isValidExtensionVersion(manifest.version)) {
+        fail(`manifest version ${JSON.stringify(manifest.version)} must be a string of 1-4 dot-separated integers (0-65535, no leading zeros, not all zero)`);
     }
-    if ((manifest.name ?? "").length > 75) {
+    if (typeof manifest.name !== "string" || manifest.name.trim() === "") {
+        fail("manifest name must be a non-empty string");
+    }
+    if (manifest.name.length > 75) {
         fail("manifest name is longer than 75 characters");
     }
     if ((manifest.description ?? "").length > 132) {
