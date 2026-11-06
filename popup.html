@@ -89,10 +89,8 @@
         }
 
         .lede,
-        .hint,
         .meta,
-        .config,
-        summary {
+        .config {
             color: var(--muted);
             font-size: 12px;
             line-height: 1.45;
@@ -107,13 +105,8 @@
             gap: 8px;
         }
 
-        button,
-        textarea,
-        summary {
-            font: inherit;
-        }
-
         button {
+            font: inherit;
             width: 100%;
             min-height: 36px;
             border: 0;
@@ -134,9 +127,7 @@
             transform: translateY(1px);
         }
 
-        button:focus-visible,
-        textarea:focus-visible,
-        summary:focus-visible {
+        button:focus-visible {
             outline: 2px solid #9cdcfe;
             outline-offset: 2px;
         }
@@ -192,41 +183,6 @@
             white-space: pre-line;
             word-break: break-word;
         }
-
-        details {
-            margin-top: 12px;
-            padding-top: 12px;
-            border-top: 1px solid var(--border);
-        }
-
-        summary {
-            cursor: pointer;
-            list-style-position: outside;
-        }
-
-        .hint {
-            margin: 10px 0 8px;
-            color: var(--muted-2);
-        }
-
-        textarea {
-            width: 100%;
-            height: 72px;
-            margin: 0 0 8px;
-            padding: 9px;
-            resize: vertical;
-            border: 1px solid #4f4d4b;
-            border-radius: 9px;
-            background: #171615;
-            color: var(--text);
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 11px;
-            line-height: 1.35;
-        }
-
-        textarea::placeholder {
-            color: #8a8886;
-        }
     </style>
 </head>
 <body>
@@ -247,24 +203,6 @@
                 <button id="signInBtn">Sign-in</button>
                 <button id="signOutBtn" class="secondary">Sign out</button>
             </div>
-
-            <details>
-                <summary>Advanced: paste temporary token</summary>
-                <p class="hint">
-                    Use this to get a token (AZ CLI required):
-                    <br><br>
-                    <code style="display: inline-block; padding: 4px 8px; border-radius: 4px; background: #333; color: #fff;">
-                        az account get-access-token --resource https://vault.azure.net --query accessToken -o tsv
-                    </code>
-                    <br><br>
-                    <strong>Note:</strong> This token is only valid for 30 minutes.
-                </p>
-                <textarea id="tokenInput" placeholder="Paste Key Vault access token"></textarea>
-                <div class="actions">
-                    <button id="saveTokenBtn">Use pasted token</button>
-                    <button id="clearTokenBtn" class="secondary">Clear pasted token</button>
-                </div>
-            </details>
 
             <div id="status" class="status" role="status" aria-live="polite">Checking status...</div>
             <p id="accountInfo" class="meta"></p>
