@@ -40,6 +40,12 @@ const VAULT_TENANT_STORAGE_KEY = "kvVaultTenantMap";
 const SESSION_TOKEN_STORAGE_KEY = "kvSessionToken";
 const PENDING_TENANT_STORAGE_KEY = "kvPendingTenantId";
 const PENDING_TENANT_REASON_STORAGE_KEY = "kvPendingTenantReason";
+const PENDING_TENANT_AADSTS_STORAGE_KEY = "kvPendingTenantAadsts";
+const PENDING_TENANT_STORAGE_KEYS = [
+    PENDING_TENANT_STORAGE_KEY,
+    PENDING_TENANT_REASON_STORAGE_KEY,
+    PENDING_TENANT_AADSTS_STORAGE_KEY
+];
 const LEGACY_AUTH_STORAGE_KEYS = ["kvToken"];
 
 // Entra errors that come from the app registration or the tenant's policy rather than
@@ -375,21 +381,32 @@ async function getPastedToken() {
 
 // Held in session storage rather than a variable because the service worker unloads
 // between the failed vault call and the moment the user opens the popup.
-async function getPendingSignInTenantId() {
-    const result = await sessionStorageGet([PENDING_TENANT_STORAGE_KEY]);
+// The keys are written together and must be read together, or a concurrent failure for
+// another tenant could pair one tenant's ID with the other tenant's reason.
+async function getPendingSignIn() {
+    const result = await sessionStorageGet(PENDING_TENANT_STORAGE_KEYS);
     const tenantId = result[PENDING_TENANT_STORAGE_KEY];
-    return isTenantGuid(tenantId) ? tenantId : "";
+
+    if (!isTenantGuid(tenantId)) {
+        return { tenantId: "", reason: "", aadstsCode: 0 };
+    }
+
+    return {
+        tenantId,
+        reason: String(result[PENDING_TENANT_REASON_STORAGE_KEY] || ""),
+        aadstsCode: Number(result[PENDING_TENANT_AADSTS_STORAGE_KEY]) || 0
+    };
 }
 
-async function getPendingSignInReason() {
-    const result = await sessionStorageGet([PENDING_TENANT_REASON_STORAGE_KEY]);
-    return String(result[PENDING_TENANT_REASON_STORAGE_KEY] || "");
-}
-
-function setPendingSignInTenantId(tenantId, reason = "") {
+// reason is set only when an admin fix is likely; aadstsCode is kept for every rejection.
+function setPendingSignIn(tenantId, { reason = "", aadstsCode = 0 } = {}) {
     return isTenantGuid(tenantId)
-        ? sessionStorageSet({ [PENDING_TENANT_STORAGE_KEY]: tenantId, [PENDING_TENANT_REASON_STORAGE_KEY]: reason })
-        : sessionStorageRemove([PENDING_TENANT_STORAGE_KEY, PENDING_TENANT_REASON_STORAGE_KEY]);
+        ? sessionStorageSet({
+            [PENDING_TENANT_STORAGE_KEY]: tenantId,
+            [PENDING_TENANT_REASON_STORAGE_KEY]: reason,
+            [PENDING_TENANT_AADSTS_STORAGE_KEY]: aadstsCode
+        })
+        : sessionStorageRemove(PENDING_TENANT_STORAGE_KEYS);
 }
 
 function base64UrlEncodeBytes(bytes) {
@@ -664,8 +681,8 @@ async function handleSignIn(requestedTenantId = "") {
     const code = parseAuthorizationCode(redirectResponseUrl, redirectUri, state);
     await exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenantId);
 
-    if (await getPendingSignInTenantId() === tenantId) {
-        await setPendingSignInTenantId("");
+    if ((await getPendingSignIn()).tenantId === tenantId) {
+        await setPendingSignIn("");
     }
 
     return getAuthStatus();
@@ -675,7 +692,7 @@ async function clearOAuthAuth() {
     accessTokenCache.clear();
     pendingAccessTokenRequests.clear();
 
-    await setPendingSignInTenantId("");
+    await setPendingSignIn("");
     await storageRemove([...AUTH_STORAGE_KEYS, ...LEGACY_AUTH_STORAGE_KEYS]);
 }
 
@@ -706,6 +723,7 @@ async function getAuthStatus() {
     const manualTokenActive = Boolean(await getPastedToken());
     const hasCachedToken = hasAnyUsableCachedAccessToken();
     const signedIn = hasCachedToken || Boolean(storedAuth.refreshToken);
+    const pendingSignIn = await getPendingSignIn();
 
     return {
         configured: isClientConfigured(),
@@ -715,8 +733,9 @@ async function getAuthStatus() {
         clientId: CLIENT_ID,
         tenantId: TENANT_ID,
         signedInTenantId: storedAuth.tenantId,
-        pendingTenantId: await getPendingSignInTenantId(),
-        pendingTenantReason: await getPendingSignInReason(),
+        pendingTenantId: pendingSignIn.tenantId,
+        pendingTenantReason: pendingSignIn.reason,
+        pendingTenantAadstsCode: pendingSignIn.aadstsCode,
         account: storedAuth.account,
         expiresAt: hasCachedToken ? getLatestCachedExpiry() : storedAuth.expiresAt
     };
@@ -757,14 +776,14 @@ function createAccessTokenRequest(tenantKey) {
                 // can answer with codes well outside the usual interaction-required set.
                 if (isEntraRejection) {
                     const reason = AADSTS_HINTS[error.aadstsCode] ? error.message : "";
-                    await setPendingSignInTenantId(tenantKey, reason);
+                    await setPendingSignIn(tenantKey, { reason, aadstsCode: error.aadstsCode });
                     throw new AuthRequiredError(reason
                         ? `${reason} for tenant ${tenantKey}`
                         : `Sign in required for tenant ${tenantKey}${formatAadsts(error.aadstsCode)}`);
                 }
             } else if (isInteractionRequiredError(error)) {
                 await clearOAuthAuth();
-                throw new AuthRequiredError(`Sign in required${formatAadsts(error.aadstsCode)}`);
+                throw new AuthRequiredError(error.message || "Sign in required");
             }
 
             console.error("[KV Ext] Token refresh failed:", { tenant: tenantKey, error });
