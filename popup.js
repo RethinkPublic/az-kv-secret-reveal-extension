@@ -122,7 +122,8 @@ function reloadActiveAzurePortalTab(successMessage, fallbackMessage) {
                 return;
             }
 
-            if (activeTab.url && !activeTab.url.startsWith("https://portal.azure.com/")) {
+            // Without the "tabs" permission, url is only set for hosts in host_permissions.
+            if (!activeTab.url?.startsWith("https://portal.azure.com/")) {
                 showStatus(fallbackMessage);
                 resolve();
                 return;

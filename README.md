@@ -189,11 +189,14 @@ The extension uses OAuth Authorization Code Flow with PKCE through `chrome.ident
 2. Open `App registrations`.
 3. Create a new app registration.
 4. Use a public-client style registration. Do not create or use a client secret.
-5. Add the extension redirect URI:
+5. Add one redirect URI per extension ID in use (see [Extension ID](#extension-id)):
 
    ```text
    https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/
+   https://<store-extension-id>.chromiumapp.org/
    ```
+
+   The extension sends `chrome.identity.getRedirectURL()`, which is `https://<extension-id>.chromiumapp.org/` for the running build.
 
 6. Copy the Application client ID.
 7. Set `CLIENT_ID` in `background.js`.
@@ -243,15 +246,23 @@ If a silent cross-tenant token cannot be obtained, the popup keeps its `Sign-in`
 
 ### Extension ID
 
-The extension ID is pinned:
+There are two IDs:
 
-```text
-aobcnpejfheeceefeejkogdonmhndhcn
-```
+| Build | ID | Source |
+|---|---|---|
+| Unpacked from this repo, or `bin/azkvextension.crx` | `aobcnpejfheeceefeejkogdonmhndhcn` | `key` field in `manifest.json` (public key of `bin/azkvextension.pem`) |
+| Chrome Web Store | assigned by the store on first upload | the store's own signing key |
 
-It is derived from the `key` field in `manifest.json`, which holds the base64 public key matching `bin/azkvextension.pem`. Because the ID is pinned, it stays the same whether the extension is loaded unpacked, from the `.zip`, or installed from `bin/azkvextension.crx`, and it stays the same across machines and reinstalls. One redirect URI works for every install.
+The store rejects a manifest with a `key` field, so `node scripts/package.mjs` removes it from the packaged copy. The repo manifest keeps `key` so unpacked installs keep the ID that is already registered as a redirect URI. Do not remove `key` from the repo manifest unless you replace it (see below).
 
-Do not remove or change the `key` field. Doing so changes the extension ID and breaks the Entra redirect URI, stored settings, and any policy that allowlists the extension.
+Each ID needs its own redirect URI on the app registration. To give unpacked builds the store ID instead, so one redirect URI covers both:
+
+1. In the Chrome Web Store Developer Dashboard, open the item, go to `Package`, and click `View public key`.
+2. Copy the base64 text between the `BEGIN PUBLIC KEY` and `END PUBLIC KEY` lines and join it into one line.
+3. Replace the `key` value in `manifest.json` with it. Unpacked builds now get the store ID. The package script still strips it.
+4. Remove the `aobcnpejfheeceefeejkogdonmhndhcn` redirect URI once nobody uses the old unpacked or `.crx` build.
+
+Changing the ID clears the extension's stored sign-in and vault-to-tenant map. Users sign in again once.
 
 Keep `bin/azkvextension.pem` private and out of version control. It is the signing key for the `.crx`. Anyone with it can publish an update that Chrome accepts as this extension.
 
@@ -418,12 +429,11 @@ Secret values:
 The manifest requests:
 
 - `storage`: store auth state and temporary token state.
-- `activeTab`: reload the active Azure Portal tab after auth changes.
 - `identity`: run Microsoft sign-in through browser identity APIs.
 
 Host permissions:
 
-- `https://portal.azure.com/*`: inject UI into Azure Portal.
+- `https://portal.azure.com/*`: inject UI into Azure Portal, and let the popup see that the active tab is the portal so it can reload it after auth changes.
 - `https://*.vault.azure.net/*`: call Key Vault data-plane APIs.
 - `https://login.microsoftonline.com/*`: request OAuth tokens.
 
@@ -510,8 +520,8 @@ Check:
 
 - the Entra app registration exists;
 - `CLIENT_ID` matches the Application client ID;
-- the redirect URI uses the pinned extension ID `aobcnpejfheeceefeejkogdonmhndhcn`;
-- the `key` field in `manifest.json` is intact, so the loaded extension ID matches that redirect URI;
+- a redirect URI is registered for the ID of the build you run: `aobcnpejfheeceefeejkogdonmhndhcn` for unpacked builds, the store ID for store installs (see [Extension ID](#extension-id));
+- for unpacked builds, the `key` field in `manifest.json` is intact, so the loaded ID matches that redirect URI;
 - the redirect URI ends with `/`.
 
 ### Wrong Tenant For This Vault
@@ -610,6 +620,7 @@ Useful local checks:
 node --check .\content.js
 node --check .\background.js
 node --check .\popup.js
+node --check .\scripts\package.mjs
 ```
 
 After editing:
@@ -619,6 +630,63 @@ After editing:
 3. Refresh Azure Portal.
 4. Test sign-in, reveal, hide, save, export, malformed import rejection, import preview/cancel, import into new and existing names, older-version read-only behavior, and popup sign-out.
 
+## Publish to the Chrome Web Store
+
+### Build the package
+
+```powershell
+node .\scripts\package.mjs
+```
+
+This writes `dist/az-kv-secret-revealer-<version>.zip`. It needs Node.js 18 or later and nothing else. The ZIP contains only `manifest.json`, the three scripts, `popup.html`, and the 16/32/48/128 icons. The packaged `manifest.json` has no `key` field. `bin/`, keys, `.crx` files, docs, and dev files are never included. Bump `version` in `manifest.json` before each upload; the store rejects a version it has already seen.
+
+### First upload
+
+1. Upload the ZIP in the [Developer Dashboard](https://chrome.google.com/webstore/devconsole) (`New item`).
+2. Copy the item ID the dashboard shows. This is the store extension ID.
+3. In tenant `d273efcb-f05e-4f14-bdbe-8689d559bc0a`, open `Microsoft Entra ID` > `App registrations` > `kv-secret-revealer` (`3cf88cbe-59ac-40ec-ae35-27eea2dcf2d3`) > `Authentication`.
+4. In the platform that already lists `https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/`, add `https://<store-id>.chromiumapp.org/` (lowercase ID, trailing `/`) and save. Keep the existing URI for unpacked builds.
+5. Fill in the listing using the checklist below and submit for review.
+6. Optional: copy the store public key into `manifest.json` so unpacked builds share the store ID (see [Extension ID](#extension-id)).
+
+Admin consent links for other tenants work with either registered redirect URI.
+
+### Store listing checklist
+
+Single purpose:
+
+> Shows, edits, and transfers Azure Key Vault secret values inside the Azure Portal Key Vault pages, using the signed-in user's own Azure permissions.
+
+Permission justifications:
+
+| Permission | Justification |
+|---|---|
+| `storage` | Stores the Microsoft sign-in refresh token, account name, and a map of vault name to tenant ID so the user does not sign in on every visit. A pasted temporary token is kept only in session storage. |
+| `identity` | Runs Microsoft Entra sign-in (OAuth authorization code with PKCE) through `chrome.identity.launchWebAuthFlow`. |
+| `https://portal.azure.com/*` | Adds the reveal, edit, create, search, export, and import controls to the Azure Portal Key Vault secrets pages, and lets the popup reload the active portal tab after sign-in. |
+| `https://*.vault.azure.net/*` | Reads, lists, and writes secrets with the Azure Key Vault REST API for the vault the user has open. |
+| `https://login.microsoftonline.com/*` | Exchanges the sign-in code and refresh token for Key Vault access tokens. |
+
+Remote code: answer `No`. All scripts are in the package; the extension only calls Microsoft APIs for data.
+
+Data usage disclosures (Privacy practices tab):
+
+- Check `Authentication information` (Microsoft refresh and access tokens) and `Personally identifiable information` (the account UPN or email from the token, shown in the popup).
+- Check `Website content` (Key Vault secret names and values shown on the page).
+- Certify that data is not sold, not used or transferred for purposes unrelated to the single purpose, and not used for credit decisions.
+- State that data goes only to Microsoft (`login.microsoftonline.com`, `*.vault.azure.net`) and is never sent to the developer or third parties. Secret values stay in page memory and are written to disk only when the user exports a file.
+
+Privacy policy: required because the extension handles authentication data and secret values. Publish a page (for example in a public repo or company site) that says what is stored (refresh token, account metadata, vault-to-tenant map in `chrome.storage.local`; pasted token in `chrome.storage.session`), that secret values are not stored by the extension, that data is only sent to Microsoft endpoints, and how to remove it (sign out or uninstall). Put its URL in the `Privacy practices` tab.
+
+Listing assets:
+
+- Store icon: 128x128 (`icons/icon128.png`).
+- At least one screenshot, 1280x800 or 640x400. Suggested: secrets list with values revealed (use a test vault with fake values), editable current version with the save check, export/import panel, and the popup signed in.
+- Small promo tile: 440x280. The dashboard asks for it before submission.
+- Detailed description: state that the extension is not affiliated with or endorsed by Microsoft, and that it only works with the user's existing Key Vault RBAC permissions.
+
+Reviewer notes: reviewers cannot sign in to your tenant. Explain that the extension needs a Microsoft Entra work account with Key Vault access and point to the screenshots. If it is only for your organization, consider `Unlisted` visibility (installable only by link). `Private` visibility needs a Google Workspace domain or trusted testers. Every visibility still goes through review.
+
 ## Project Files
 
 - `manifest.json`: extension metadata, permissions, content script, popup, and background service worker.
@@ -626,7 +694,8 @@ After editing:
 - `content.js`: Azure Portal DOM detection, injected toolbar button, grid columns, editable values, read-only older versions.
 - `popup.html`: popup UI.
 - `popup.js`: popup auth actions and status rendering.
-- `icons/`: extension icons.
+- `icons/`: extension icons. `icon512.png` is not packaged; use it for store artwork.
+- `scripts/package.mjs`: builds the Chrome Web Store ZIP.
 
 ## Known Limitations
 
@@ -638,7 +707,6 @@ After editing:
 - It does not provide a confirmation dialog before saving a new version or creating a secret.
 - The duplicate-name check on create only sees rows already loaded in the grid.
 - Export and import use plaintext JSON files by design.
-- It does not package or publish the extension to a browser store.
 - It does not replace Azure audit logs, access reviews, or formal secret-management workflows.
 
 ## Recommended Operational Practices
