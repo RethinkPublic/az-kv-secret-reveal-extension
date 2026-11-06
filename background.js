@@ -2,8 +2,9 @@
 
 // Entra app registration setup:
 // - Register a public client / SPA-style app. Do not configure a client secret.
-// - Add this exact redirect URI to the app: https://aobcnpejfheeceefeejkogdonmhndhcn.chromiumapp.org/
-//   The extension ID is pinned by the "key" field in manifest.json, so this URI is stable across installs.
+// - Add the redirect URI chrome.identity.getRedirectURL() returns: https://<extension-id>.chromiumapp.org/
+//   Unpacked builds use the ID pinned by the "key" field in manifest.json. The Chrome Web Store
+//   build has no "key" and gets the store-assigned ID, so it needs its own redirect URI.
 // - Grant delegated Key Vault permissions and assign Key Vault data-plane RBAC to the signed-in user.
 // - Replace CLIENT_ID below with the app registration's Application (client) ID.
 const CLIENT_ID = "3cf88cbe-59ac-40ec-ae35-27eea2dcf2d3";
@@ -68,13 +69,20 @@ const accessTokenCache = new Map();
 const pendingAccessTokenRequests = new Map();
 let vaultTenantMap = null;
 
+function isPortalContentScript(sender) {
+    return sender.id === chrome.runtime.id
+        && Boolean(sender.tab)
+        && typeof sender.url === "string"
+        && sender.url.startsWith("https://portal.azure.com/");
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     if (!request || typeof request.action !== "string") {
         return false;
     }
 
     if (request.action === "fetchSecret") {
-        if (sender.url && !sender.url.startsWith("https://portal.azure.com/")) {
+        if (!isPortalContentScript(sender)) {
             sendResponse({ error: "Unsupported sender" });
             return false;
         }
@@ -84,7 +92,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "setSecret") {
-        if (sender.url && !sender.url.startsWith("https://portal.azure.com/")) {
+        if (!isPortalContentScript(sender)) {
             sendResponse({ error: "Unsupported sender" });
             return false;
         }
@@ -94,7 +102,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     if (request.action === "listSecrets") {
-        if (sender.url && !sender.url.startsWith("https://portal.azure.com/")) {
+        if (!isPortalContentScript(sender)) {
             sendResponse({ error: "Unsupported sender" });
             return false;
         }

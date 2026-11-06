@@ -1,0 +1,12 @@
+# Signing keys and packed builds
+*.pem
+*.crx
+bin/
+
+# Store package output
+dist/
+*.zip
+
+# Exported Key Vault secrets (plaintext)
+key-vault-*-secrets-*.json
+*secrets*.json
