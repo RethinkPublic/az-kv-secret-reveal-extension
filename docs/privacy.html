@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Privacy Policy: Azure Key Vault Secret Revealer</title>
+<!-- Generated from PRIVACY.md. Edit PRIVACY.md and keep this file in sync. -->
+<style>
+:root { --text: #1b1a19; --muted: #605e5c; --bg: #ffffff; --soft: #f3f2f1; --border: #d2d0ce; --link: #0f6cbd; }
+@media (prefers-color-scheme: dark) {
+  :root { --text: #f3f2f1; --muted: #c8c6c4; --bg: #161514; --soft: #252423; --border: #3b3a39; --link: #6cb8f6; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 "Segoe UI", system-ui, -apple-system, Roboto, Helvetica, Arial, sans-serif; }
+main { max-width: 920px; margin: 0 auto; padding: 32px 20px 64px; }
+h1 { font-size: 1.9rem; line-height: 1.25; margin: 0 0 16px; }
+h2 { font-size: 1.35rem; margin: 40px 0 12px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+a { color: var(--link); }
+code { font-family: Consolas, "Courier New", monospace; font-size: 0.9em; background: var(--soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+table { display: block; overflow-x: auto; border-collapse: collapse; margin: 16px 0; font-size: 0.92rem; }
+th, td { border: 1px solid var(--border); padding: 8px 10px; text-align: left; vertical-align: top; min-width: 120px; }
+th { background: var(--soft); }
+li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+<h1 id="privacy-policy-azure-key-vault-secret-revealer">Privacy Policy: Azure Key Vault Secret Revealer</h1>
+<ul>
+<li><strong>Effective date:</strong> {{EFFECTIVE_DATE}}</li>
+<li><strong>Last updated:</strong> {{EFFECTIVE_DATE}}</li>
+<li><strong>Publisher:</strong> Rethink (RethinkFirst) (&quot;Rethink&quot;, &quot;we&quot;, &quot;us&quot;)</li>
+<li><strong>Contact:</strong> {{CONTACT_EMAIL}}</li>
+</ul>
+<p>This policy explains what the Azure Key Vault Secret Revealer browser extension (the &quot;extension&quot;) does with your data. The extension adds controls to the Azure Portal so you can show, edit, create, search, export, and import Azure Key Vault secrets with your own Azure permissions.</p>
+<p>The extension is not made, endorsed, or supported by Microsoft.</p>
+<h2 id="summary">Summary</h2>
+<ul>
+<li>The extension runs only in your browser. Rethink runs no server for it.</li>
+<li>It talks only to Microsoft: Microsoft Entra ID to sign you in, and the Azure Key Vaults you open.</li>
+<li>Rethink does not collect, receive, store, sell, or share any of your data.</li>
+<li>No analytics, tracking, ads, or remote code.</li>
+<li>Secret values stay in the memory of your Azure Portal tab. They are written to disk only when you export them to a file.</li>
+<li>Sign out in the extension popup to delete your sign-in data. Uninstall the extension to delete everything it stored.</li>
+</ul>
+<h2 id="1-data-the-extension-handles">1. Data the extension handles</h2>
+<p>All of this data stays on your device, except what the extension sends to Microsoft (see <a href="#3-where-data-is-sent">section 3</a>).</p>
+<table>
+<thead>
+<tr>
+<th>Data</th>
+<th>Source</th>
+<th>Why</th>
+<th>Where it is kept</th>
+<th>How long</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Microsoft refresh token</td>
+<td>Microsoft Entra ID, when you sign in</td>
+<td>Get new access tokens without asking you to sign in again</td>
+<td><code>chrome.storage.local</code> (browser profile on your device)</td>
+<td>Until you sign out or uninstall, or until Microsoft stops accepting it (the extension then deletes it)</td>
+</tr>
+<tr>
+<td>Microsoft access tokens for Key Vault</td>
+<td>Microsoft Entra ID</td>
+<td>Call Key Vault as you</td>
+<td>Memory of the extension&#39;s background service worker only. Never written to disk.</td>
+<td>Until they expire (usually 60 to 90 minutes), the browser stops the service worker, or you sign out</td>
+</tr>
+<tr>
+<td>Account details: display name, username (email or UPN), Entra object ID, tenant ID, token expiry time</td>
+<td>Read from the tokens Microsoft returns</td>
+<td>Show which account is signed in, and pick the right tenant</td>
+<td><code>chrome.storage.local</code></td>
+<td>Until you sign out or uninstall</td>
+</tr>
+<tr>
+<td>Vault-to-tenant list: names of Key Vaults you opened and the tenant ID that owns each</td>
+<td>Key Vault&#39;s reply when a vault belongs to another tenant</td>
+<td>Send later requests to the right tenant without an extra round trip</td>
+<td><code>chrome.storage.local</code></td>
+<td>Until you uninstall. Sign-out does not clear it. It holds no tokens and no secret data.</td>
+</tr>
+<tr>
+<td>Pending sign-in notice: a tenant ID, a short reason, and a Microsoft error code (AADSTS)</td>
+<td>Microsoft&#39;s reply when a tenant rejects a token request</td>
+<td>Tell you in the popup which tenant needs sign-in</td>
+<td><code>chrome.storage.session</code> (memory only, not written to disk)</td>
+<td>Until you sign in to that tenant, sign out, or close the browser</td>
+</tr>
+<tr>
+<td>Secret names and details: name, ID, created date, enabled flag</td>
+<td>Key Vault and the Azure Portal page</td>
+<td>Show the full list, search, sort, export, preview imports, and warn about duplicate names</td>
+<td>Memory of the extension and the Azure Portal tab</td>
+<td>Until you leave the page, or close or reload the tab</td>
+</tr>
+<tr>
+<td>Secret values</td>
+<td>Key Vault, when you reveal or export. You, when you type, create, or import a value.</td>
+<td>Show, copy, edit, create, export, and import secrets</td>
+<td>Memory of the Azure Portal tab and the page itself. Each value passes through the background service worker during its request. Never saved to extension storage.</td>
+<td>Until you close or reload the tab. Saving a secret replaces its cached values, and leaving its versions view drops them.</td>
+</tr>
+<tr>
+<td>Azure Portal page address and title</td>
+<td>The open Azure Portal tab</td>
+<td>Find which vault and secret are open, and notice page changes</td>
+<td>Memory of the Azure Portal tab</td>
+<td>While the tab is open</td>
+</tr>
+</tbody></table>
+<p>Other points:</p>
+<ul>
+<li><strong>Your password.</strong> The extension never sees it. Sign-in runs on Microsoft&#39;s own page in a window that Chrome opens. The extension only receives the result.</li>
+<li><strong>Account type.</strong> The extension is built for Microsoft work or school accounts (Microsoft Entra ID).</li>
+<li><strong>Clipboard.</strong> When you click a copy button, the secret value goes to your system clipboard. It stays there until you or another app replace it.</li>
+<li><strong>Diagnostic messages.</strong> The extension writes short error messages to the browser&#39;s local developer console. They can include vault names, secret names, tenant IDs, HTTP status codes, and Microsoft error text. They never include tokens or secret values, and they are not sent anywhere.</li>
+<li><strong>Other websites.</strong> The extension runs only on <code>https://portal.azure.com</code>. It does not read other sites or your browsing history.</li>
+</ul>
+<h2 id="2-how-the-data-is-used">2. How the data is used</h2>
+<p>The data is used only for the extension&#39;s single purpose: to show, edit, create, search, export, and import Azure Key Vault secrets in the Azure Portal, using your own Azure access.</p>
+<p>It is not used for anything else. That includes advertising, profiling, analytics, market research, training AI models, or deciding creditworthiness or lending.</p>
+<h2 id="3-where-data-is-sent">3. Where data is sent</h2>
+<p>The extension sends data only to Microsoft, directly from your browser, over HTTPS:</p>
+<table>
+<thead>
+<tr>
+<th>Address</th>
+<th>What is sent</th>
+<th>Why</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><code>https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize</code> (opened in Chrome&#39;s sign-in window)</td>
+<td>The extension&#39;s app ID, the requested permissions, and one-time sign-in check values (PKCE and state)</td>
+<td>You sign in to Microsoft</td>
+</tr>
+<tr>
+<td><code>https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token</code></td>
+<td>The extension&#39;s app ID, the one-time sign-in code and its PKCE check value, and your refresh token</td>
+<td>Get access tokens for Key Vault, including for vaults in other tenants</td>
+</tr>
+<tr>
+<td><code>https://{vault-name}.vault.azure.net/secrets/...</code> (Key Vault REST API)</td>
+<td>Your access token, secret names and versions, and new secret values when you save, create, or import</td>
+<td>List, read, and write secrets</td>
+</tr>
+</tbody></table>
+<p>The <code>{tenant}</code> part is <code>organizations</code> or the tenant ID that a vault names in its reply.</p>
+<p>After sign-in, Microsoft sends you back to <code>https://&lt;extension-id&gt;.chromiumapp.org/</code>. Chrome handles that address inside the browser. It is not a server, and nothing is sent to it.</p>
+<p>Microsoft handles this data under the <a href="https://privacy.microsoft.com/privacystatement" rel="noopener noreferrer">Microsoft Privacy Statement</a> and your organization&#39;s agreements with Microsoft. Your organization may see your activity in its own logs, such as Microsoft Entra sign-in logs and Key Vault audit logs.</p>
+<p><strong>Nothing is sent to Rethink or to anyone else.</strong></p>
+<h2 id="4-what-we-do-not-do">4. What we do not do</h2>
+<ul>
+<li>We do not collect, receive, store, or have access to any data the extension handles.</li>
+<li>We do not sell, rent, or trade user data.</li>
+<li>We do not transfer user data to third parties. The only recipient is Microsoft, which your browser contacts directly because you chose to use its services.</li>
+<li>We do not use analytics, telemetry, crash reporting, cookies, tracking, or ads.</li>
+<li>We do not load or run remote code. All code ships inside the extension package, and its content security policy allows only the extension&#39;s own scripts.</li>
+<li>No person at Rethink reads your data, because we never receive it.</li>
+</ul>
+<p>The Chrome Web Store shows publishers aggregate numbers, such as install counts and ratings. Google provides these under its own privacy policy. They do not come from the extension.</p>
+<h2 id="5-export-and-import-files">5. Export and import files</h2>
+<ul>
+<li><strong>Export</strong> saves a plain JSON file with secret names and values, through your browser&#39;s normal download. The values are <strong>not encrypted</strong>. After the download, the extension has no further access to the file. You are responsible for protecting it and deleting it when done.</li>
+<li><strong>Import</strong> reads a JSON file you pick. The extension shows a preview, and after you confirm, sends the values only to the vault open in your tab. It does not keep the file or its contents.</li>
+</ul>
+<h2 id="6-security">6. Security</h2>
+<ul>
+<li>All network traffic uses HTTPS.</li>
+<li>Sign-in uses OAuth 2.0 authorization code flow with PKCE. The extension has no client secret.</li>
+<li>Access tokens stay in memory only. The refresh token is the only credential saved to disk.</li>
+<li>The background service worker accepts secret requests only from the extension&#39;s own script on <code>https://portal.azure.com</code>. It checks vault names, secret names, and Key Vault paging links before it sends a request.</li>
+<li>The extension has no third-party libraries and no remote code.</li>
+</ul>
+<p>Limits you should know:</p>
+<ul>
+<li><code>chrome.storage.local</code> lives in your browser profile on your device. The extension does not add its own encryption to it. Protect your device with disk encryption and a screen lock, and do not share your browser profile.</li>
+<li>Revealed values are plain text on your screen. Anyone who can see your screen, a screen share, or a screenshot can read them.</li>
+<li>Anyone who can use your browser profile while you are signed in can use the extension with your Azure access. Sign out when you are done.</li>
+</ul>
+<p>To report a security issue, write to {{CONTACT_EMAIL}}.</p>
+<h2 id="7-your-controls">7. Your controls</h2>
+<ul>
+<li><strong>Hide values:</strong> click <code>Hide Key Vault Secret Values</code> in the Azure Portal command bar.</li>
+<li><strong>Clear secret values from memory:</strong> close or reload the Azure Portal tab.</li>
+<li><strong>Sign out:</strong> click <code>Sign out</code> in the extension popup. This deletes the refresh token, account details, cached access tokens, and any pending sign-in notice.</li>
+<li><strong>Remove everything:</strong> uninstall the extension in <code>chrome://extensions</code>. Chrome deletes all of its stored data, including the vault-to-tenant list.</li>
+<li><strong>Delete export files</strong> you no longer need.</li>
+<li><strong>Revoke access at Microsoft:</strong> use &quot;Sign out everywhere&quot; in <a href="https://myaccount.microsoft.com/" rel="noopener noreferrer">My Account</a>. Your administrator can also revoke your sessions or remove the app&#39;s consent in Microsoft Entra ID under <code>Enterprise applications</code>.</li>
+</ul>
+<p>Because Rethink holds no data about you, we have nothing to give you, correct, or delete. For data held by Microsoft or your organization, contact them.</p>
+<h2 id="8-chrome-web-store-user-data-policy">8. Chrome Web Store User Data Policy</h2>
+<p>The use of information received by this extension, including information received from Google and Chrome APIs, adheres to the <a href="https://developer.chrome.com/docs/webstore/program-policies/limited-use" rel="noopener noreferrer">Chrome Web Store User Data Policy</a>, including the Limited Use requirements. In particular:</p>
+<ul>
+<li>User data is used only to provide the single purpose described in <a href="#2-how-the-data-is-used">section 2</a>.</li>
+<li>User data is transferred only to Microsoft, and only as needed for that purpose.</li>
+<li>User data is never used or transferred for personalized, retargeted, or interest-based ads.</li>
+<li>User data is never sold, and never used or transferred to decide creditworthiness or for lending.</li>
+<li>No person reads user data.</li>
+</ul>
+<h2 id="9-children">9. Children</h2>
+<p>The extension is a tool for IT and cloud staff. It needs a Microsoft work or school account with Azure Key Vault access. It is not directed at children under 13, and we do not knowingly collect data from children. We collect no data from anyone.</p>
+<h2 id="10-changes-to-this-policy">10. Changes to this policy</h2>
+<p>If we change this policy, we will post the new version at the same address and update the &quot;Last updated&quot; date. If a future version handles data in a new way, such as new data types or new recipients, we will update this policy and the Chrome Web Store disclosures before that version is released, and ask for your consent in the extension where the Chrome Web Store policy requires it. Chrome also asks you to approve new permissions that an update adds.</p>
+<h2 id="11-contact">11. Contact</h2>
+<p>Questions about this policy or the extension&#39;s data handling: Rethink (RethinkFirst), {{CONTACT_EMAIL}}.</p>
+</main>
+</body>
+</html>
