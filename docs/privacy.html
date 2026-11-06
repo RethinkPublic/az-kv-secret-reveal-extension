@@ -85,6 +85,13 @@ li { margin: 4px 0; }
 <td>Until you uninstall. Sign-out does not clear it. It holds no tokens and no secret data.</td>
 </tr>
 <tr>
+<td>App registration settings: the client ID and tenant ID you enter on the settings page</td>
+<td>You</td>
+<td>Sign in with your Microsoft Entra app registration. The extension has no built-in values.</td>
+<td><code>chrome.storage.local</code></td>
+<td>Until you clear them on the settings page or uninstall. Sign-out does not clear them. They hold no tokens and no secret data.</td>
+</tr>
+<tr>
 <td>Pending sign-in notice: a tenant ID, a short reason, and a Microsoft error code (AADSTS)</td>
 <td>Microsoft&#39;s reply when a tenant rejects a token request</td>
 <td>Tell you in the popup which tenant needs sign-in</td>
@@ -150,7 +157,7 @@ li { margin: 4px 0; }
 <td>List, read, and write secrets</td>
 </tr>
 </tbody></table>
-<p>The <code>{tenant}</code> part is <code>organizations</code> or the tenant ID that a vault names in its reply.</p>
+<p>The <code>{tenant}</code> part is <code>organizations</code>, the tenant ID you set on the settings page, or the tenant ID that a vault names in its reply.</p>
 <p>After sign-in, Microsoft sends you back to <code>https://&lt;extension-id&gt;.chromiumapp.org/</code>. Chrome handles that address inside the browser. It is not a server, and nothing is sent to it.</p>
 <p>Microsoft handles this data under the <a href="https://privacy.microsoft.com/privacystatement" rel="noopener noreferrer">Microsoft Privacy Statement</a> and your organization&#39;s agreements with Microsoft. Your organization may see your activity in its own logs, such as Microsoft Entra sign-in logs and Key Vault audit logs.</p>
 <p><strong>Nothing is sent to Rethink or to anyone else.</strong></p>

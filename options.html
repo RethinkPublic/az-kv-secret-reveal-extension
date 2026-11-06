@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Key Vault Secret Revealer - Settings</title>
+    <style>
+        :root {
+            color-scheme: dark;
+            --bg: #11100f;
+            --panel: #1f1e1d;
+            --panel-soft: #292827;
+            --border: #3b3a39;
+            --text: #ffffff;
+            --muted: #c8c6c4;
+            --muted-2: #a19f9d;
+            --azure: #0078d4;
+            --azure-hover: #106ebe;
+            --error: #ff8a90;
+        }
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            min-height: 100vh;
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background:
+                radial-gradient(circle at 12% 0%, rgba(0, 120, 212, 0.3), transparent 34%),
+                linear-gradient(145deg, #252423 0%, var(--bg) 72%);
+            color: var(--text);
+        }
+
+        .shell {
+            max-width: 560px;
+            margin: 0 auto;
+            padding: 32px 16px;
+        }
+
+        .hero {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .brand-mark {
+            display: grid;
+            width: 46px;
+            height: 46px;
+            flex: 0 0 auto;
+            place-items: center;
+            border: 1px solid rgba(255, 255, 255, 0.18);
+            border-radius: 14px;
+            background: #ffffff;
+            box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
+            overflow: hidden;
+        }
+
+        .brand-mark img {
+            width: 46px;
+            height: 46px;
+            display: block;
+        }
+
+        .eyebrow {
+            margin: 0 0 2px;
+            color: #9cdcfe;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+
+        h1 {
+            margin: 0;
+            font-size: 20px;
+            font-weight: 650;
+            letter-spacing: -0.01em;
+        }
+
+        .card {
+            padding: 18px;
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            background: rgba(31, 30, 29, 0.88);
+            box-shadow: 0 16px 36px rgba(0, 0, 0, 0.25);
+        }
+
+        .lede,
+        .hint,
+        .mode {
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.45;
+        }
+
+        .lede {
+            margin: 0 0 16px;
+        }
+
+        .field {
+            margin-bottom: 16px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 6px;
+            font-size: 12px;
+            font-weight: 650;
+        }
+
+        .hint {
+            margin: 6px 0 0;
+            color: var(--muted-2);
+        }
+
+        .row {
+            display: flex;
+            gap: 8px;
+        }
+
+        input {
+            font: inherit;
+            width: 100%;
+            min-height: 36px;
+            padding: 0 10px;
+            border: 1px solid #4f4d4b;
+            border-radius: 9px;
+            background: #151413;
+            color: var(--text);
+            font-size: 13px;
+        }
+
+        input:focus-visible {
+            outline: 2px solid #9cdcfe;
+            outline-offset: 1px;
+        }
+
+        input[readonly] {
+            color: var(--muted);
+            background: var(--panel-soft);
+        }
+
+        input[aria-invalid="true"] {
+            border-color: var(--error);
+        }
+
+        button {
+            font: inherit;
+            min-height: 36px;
+            padding: 0 16px;
+            border: 0;
+            border-radius: 9px;
+            background: var(--azure);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 12px;
+            font-weight: 650;
+            white-space: nowrap;
+            transition: background 120ms ease, opacity 120ms ease, transform 120ms ease;
+        }
+
+        button:hover:not(:disabled) {
+            background: var(--azure-hover);
+        }
+
+        button:active:not(:disabled) {
+            transform: translateY(1px);
+        }
+
+        button:focus-visible {
+            outline: 2px solid #9cdcfe;
+            outline-offset: 2px;
+        }
+
+        button:disabled {
+            cursor: default;
+            opacity: 0.52;
+        }
+
+        button.secondary {
+            border: 1px solid #4f4d4b;
+            background: var(--panel-soft);
+            color: #f3f2f1;
+        }
+
+        button.secondary:hover:not(:disabled) {
+            background: #323130;
+            border-color: #605e5c;
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 20px;
+        }
+
+        .divider {
+            margin: 18px 0;
+            border: 0;
+            border-top: 1px solid var(--border);
+        }
+
+        .status {
+            display: none;
+            margin-top: 16px;
+            padding: 9px 10px;
+            border: 1px solid rgba(84, 176, 84, 0.35);
+            border-radius: 10px;
+            background: rgba(16, 124, 16, 0.13);
+            color: #b4f1b4;
+            font-size: 12px;
+            line-height: 1.35;
+        }
+
+        .status-error {
+            border-color: rgba(255, 138, 144, 0.38);
+            background: rgba(209, 52, 56, 0.16);
+            color: var(--error);
+        }
+
+        .mode {
+            margin: 0 0 16px;
+        }
+
+        code {
+            font-family: Consolas, "Courier New", monospace;
+            font-size: 11px;
+        }
+    </style>
+</head>
+<body>
+    <main class="shell">
+        <section class="hero" aria-label="Extension identity">
+            <div class="brand-mark" aria-hidden="true">
+                <img src="icons/icon128.png" alt="">
+            </div>
+            <div>
+                <p class="eyebrow">Azure Key Vault Secret Revealer</p>
+                <h1>Settings</h1>
+            </div>
+        </section>
+
+        <section class="card">
+            <p class="lede">
+                Enter the Microsoft Entra app registration this extension signs in with.
+                Both values are required. Your organization's admin can give you the IDs, or you
+                can create the app registration yourself.
+            </p>
+
+            <div class="field">
+                <label for="redirectUri">Redirect URI</label>
+                <div class="row">
+                    <input id="redirectUri" type="text" readonly spellcheck="false">
+                    <button id="copyBtn" type="button" class="secondary">Copy</button>
+                </div>
+                <p class="hint">
+                    Add this under <code>Authentication</code> on your app registration. It changes with the
+                    extension ID, so a Chrome Web Store install and an unpacked install need different ones.
+                </p>
+            </div>
+
+            <hr class="divider">
+
+            <form id="configForm" novalidate>
+                <p id="mode" class="mode"></p>
+
+                <div class="field">
+                    <label for="clientId">Application (client) ID</label>
+                    <input id="clientId" type="text" spellcheck="false" autocomplete="off"
+                        placeholder="00000000-0000-0000-0000-000000000000">
+                    <p class="hint">
+                        From the app registration's <code>Overview</code> page. Use an app registration with
+                        no client secret, and grant it the delegated Azure Key Vault permission.
+                    </p>
+                </div>
+
+                <div class="field">
+                    <label for="tenantId">Directory (tenant) ID</label>
+                    <input id="tenantId" type="text" spellcheck="false" autocomplete="off"
+                        placeholder="Tenant ID, or organizations">
+                    <p class="hint">
+                        Enter <code>organizations</code> to accept any work or school account (the app
+                        registration must be multi-tenant). Enter a tenant ID to sign in against one tenant only.
+                    </p>
+                </div>
+
+                <div class="actions">
+                    <button id="saveBtn" type="submit">Save</button>
+                    <button id="clearBtn" type="button" class="secondary">Clear settings</button>
+                </div>
+            </form>
+
+            <div id="status" class="status" role="status" aria-live="polite"></div>
+            <p class="hint">Changing either value signs you out. Sign in again from the extension popup.</p>
+        </section>
+    </main>
+
+    <script src="options.js"></script>
+</body>
+</html>

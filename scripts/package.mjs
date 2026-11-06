@@ -17,6 +17,8 @@ const RUNTIME_FILES = [
     "content.js",
     "popup.html",
     "popup.js",
+    "options.html",
+    "options.js",
     "icons/icon16.png",
     "icons/icon32.png",
     "icons/icon48.png",
@@ -35,7 +37,11 @@ function manifestReferencedFiles(manifest) {
     const addAll = (values) => values?.forEach((value) => value && files.add(value));
     addAll(Object.values(manifest.icons ?? {}));
     addAll(Object.values(manifest.action?.default_icon ?? {}));
-    addAll([manifest.action?.default_popup, manifest.background?.service_worker]);
+    addAll([
+        manifest.action?.default_popup,
+        manifest.background?.service_worker,
+        manifest.options_ui?.page
+    ]);
     for (const script of manifest.content_scripts ?? []) {
         addAll(script.js);
         addAll(script.css);

@@ -6,16 +6,21 @@
 //   Unpacked builds use the ID pinned by the "key" field in manifest.json. The Chrome Web Store
 //   build has no "key" and gets the store-assigned ID, so it needs its own redirect URI.
 // - Grant delegated Key Vault permissions and assign Key Vault data-plane RBAC to the signed-in user.
-// - Replace CLIENT_ID below with the app registration's Application (client) ID.
-const CLIENT_ID = "3cf88cbe-59ac-40ec-ae35-27eea2dcf2d3";
-const TENANT_ID = "organizations";
+// - Enter the app registration's Application (client) ID and tenant on the settings page.
+//   The extension ships with no client ID or tenant; it cannot sign in until both are saved.
+// "organizations" is the one non-GUID tenant accepted: any work or school account.
+const ANY_ORGANIZATION_TENANT = "organizations";
+const APP_NOT_CONFIGURED_MESSAGE = "App registration not set. Open the extension settings";
+const CLIENT_ID_CONFIG_KEY = "kvConfigClientId";
+const TENANT_ID_CONFIG_KEY = "kvConfigTenantId";
+const CONFIG_STORAGE_KEYS = [CLIENT_ID_CONFIG_KEY, TENANT_ID_CONFIG_KEY];
 const KEY_VAULT_SCOPE = "https://vault.azure.net/.default";
 
 // Key Vault only accepts tokens issued by the tenant that owns the vault, so the
 // authority cannot be a single constant. Vaults in other tenants answer the first
 // call with 401 plus a WWW-Authenticate challenge naming their tenant; that tenant
 // is then used as the authority and remembered per vault.
-const TENANT_GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const CHALLENGE_AUTHORITY_HOSTS = new Set([
     "login.microsoftonline.com",
     "login.windows.net",
@@ -70,6 +75,13 @@ const accessTokenCache = new Map();
 const pendingAccessTokenRequests = new Map();
 let vaultTenantMap = null;
 
+// App registration values from the settings page. Both are empty until the user saves
+// them. A worker that was just woken must load them before any handler runs, so every
+// message goes through ensureConfig().
+let clientId = "";
+let configuredTenantId = "";
+let configPromise = null;
+
 function isPortalContentScript(sender) {
     return sender.id === chrome.runtime.id
         && Boolean(sender.tab)
@@ -77,7 +89,61 @@ function isPortalContentScript(sender) {
         && sender.url.startsWith("https://portal.azure.com/");
 }
 
-chrome.runtime.onInstalled.addListener(() => {
+// A content script reports the URL of the page it runs in, so only the extension's own
+// pages (popup, settings) have a sender URL under chrome-extension://<id>/.
+function isExtensionPage(sender) {
+    return sender.id === chrome.runtime.id
+        && typeof sender.url === "string"
+        && sender.url.startsWith(chrome.runtime.getURL(""));
+}
+
+function ensureConfig() {
+    if (!configPromise) {
+        // A failed read is not cached: treating it as "not configured" would show a
+        // misleading setup prompt, so the next message tries the read again instead.
+        configPromise = loadConfig().catch((error) => {
+            configPromise = null;
+            throw error;
+        });
+    }
+
+    return configPromise;
+}
+
+async function loadConfig() {
+    const stored = await storageGet(CONFIG_STORAGE_KEYS);
+    applyConfig(stored[CLIENT_ID_CONFIG_KEY], stored[TENANT_ID_CONFIG_KEY]);
+}
+
+// Stored values are re-checked so a corrupted entry counts as "not set" instead of
+// producing a broken authorize URL.
+function applyConfig(storedClientId, storedTenantId) {
+    clientId = isGuid(storedClientId) ? String(storedClientId).toLowerCase() : "";
+    configuredTenantId = normalizeConfiguredTenant(storedTenantId);
+}
+
+function normalizeConfiguredTenant(value) {
+    const text = String(value ?? "").trim().toLowerCase();
+
+    if (text === ANY_ORGANIZATION_TENANT || isGuid(text)) {
+        return text;
+    }
+
+    return "";
+}
+
+chrome.runtime.onInstalled.addListener((details) => {
+    // Nothing works until the app registration is entered, so a fresh install goes
+    // straight to the settings page instead of leaving a dead popup.
+    if (details?.reason === "install") {
+        chrome.runtime.openOptionsPage(() => {
+            const runtimeError = chrome.runtime.lastError;
+            if (runtimeError) {
+                console.warn("[KV Ext] Could not open settings:", runtimeError.message);
+            }
+        });
+    }
+
     Promise.all([
         storageRemove(LEGACY_AUTH_STORAGE_KEYS),
         sessionStorageRemove(LEGACY_SESSION_STORAGE_KEYS)
@@ -97,7 +163,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        handleAsyncMessage(handleFetchSecret(request), sendResponse);
+        handleAsyncMessage(() => handleFetchSecret(request), sendResponse);
         return true;
     }
 
@@ -107,7 +173,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        handleAsyncMessage(handleSetSecret(request), sendResponse);
+        handleAsyncMessage(() => handleSetSecret(request), sendResponse);
         return true;
     }
 
@@ -117,30 +183,61 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             return false;
         }
 
-        handleAsyncMessage(handleListSecrets(request), sendResponse);
+        handleAsyncMessage(() => handleListSecrets(request), sendResponse);
         return true;
     }
 
     if (request.action === "signIn") {
-        handleAsyncMessage(handleSignIn(request.tenantId), sendResponse);
+        handleAsyncMessage(() => handleSignIn(request.tenantId), sendResponse);
         return true;
     }
 
     if (request.action === "signOut") {
-        handleAsyncMessage(handleSignOut(), sendResponse);
+        handleAsyncMessage(() => handleSignOut(), sendResponse);
         return true;
     }
 
     if (request.action === "getAuthStatus") {
-        handleAsyncMessage(getAuthStatus(), sendResponse);
+        handleAsyncMessage(() => getAuthStatus(), sendResponse);
+        return true;
+    }
+
+    if (request.action === "getConfig") {
+        if (!isExtensionPage(sender)) {
+            sendResponse({ error: "Unsupported sender" });
+            return false;
+        }
+
+        handleAsyncMessage(() => getConfigStatus(), sendResponse);
+        return true;
+    }
+
+    if (request.action === "saveConfig") {
+        if (!isExtensionPage(sender)) {
+            sendResponse({ error: "Unsupported sender" });
+            return false;
+        }
+
+        handleAsyncMessage(() => handleSaveConfig(request), sendResponse);
+        return true;
+    }
+
+    if (request.action === "clearConfig") {
+        if (!isExtensionPage(sender)) {
+            sendResponse({ error: "Unsupported sender" });
+            return false;
+        }
+
+        handleAsyncMessage(() => handleClearConfig(), sendResponse);
         return true;
     }
 
     return false;
 });
 
-function handleAsyncMessage(promise, sendResponse) {
-    promise
+function handleAsyncMessage(handler, sendResponse) {
+    ensureConfig()
+        .then(handler)
         .then(sendResponse)
         .catch((error) => {
             console.error("[KV Ext] Background message error:", error);
@@ -178,19 +275,23 @@ function formatAadsts(aadstsCode) {
     return aadstsCode ? ` (AADSTS${aadstsCode})` : "";
 }
 
-function isClientConfigured() {
-    return Boolean(CLIENT_ID && CLIENT_ID !== "TODO_ENTER_ENTRA_APP_CLIENT_ID");
+function isAppConfigured() {
+    return isGuid(clientId) && Boolean(configuredTenantId);
+}
+
+function isGuid(value) {
+    return GUID_PATTERN.test(String(value || ""));
 }
 
 function isTenantGuid(value) {
-    return TENANT_GUID_PATTERN.test(String(value || ""));
+    return isGuid(value);
 }
 
 function normalizeTenantKey(tenantId) {
-    return isTenantGuid(tenantId) ? String(tenantId).toLowerCase() : TENANT_ID;
+    return isTenantGuid(tenantId) ? String(tenantId).toLowerCase() : configuredTenantId;
 }
 
-function getAuthorityUrl(path, tenantId = TENANT_ID) {
+function getAuthorityUrl(path, tenantId = configuredTenantId) {
     return `https://login.microsoftonline.com/${encodeURIComponent(normalizeTenantKey(tenantId))}/oauth2/v2.0/${path}`;
 }
 
@@ -442,10 +543,10 @@ async function generatePkceChallenge(verifier) {
     return base64UrlEncodeBytes(new Uint8Array(digest));
 }
 
-function buildAuthorizeUrl({ redirectUri, codeChallenge, state, tenantId = TENANT_ID }) {
+function buildAuthorizeUrl({ redirectUri, codeChallenge, state, tenantId = configuredTenantId }) {
     const url = new URL(getAuthorityUrl("authorize", tenantId));
     url.search = new URLSearchParams({
-        client_id: CLIENT_ID,
+        client_id: clientId,
         response_type: "code",
         redirect_uri: redirectUri,
         response_mode: "query",
@@ -565,11 +666,11 @@ async function readOAuthError(response) {
     }
 }
 
-async function requestToken(parameters, tenantId = TENANT_ID) {
+async function requestToken(parameters, tenantId = configuredTenantId) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     const body = new URLSearchParams({
-        client_id: CLIENT_ID,
+        client_id: clientId,
         ...parameters
     });
 
@@ -600,7 +701,7 @@ async function requestToken(parameters, tenantId = TENANT_ID) {
     }
 }
 
-async function saveTokenResponse(tokenResponse, requestedTenantId = TENANT_ID, fallbackRefreshToken = "", fallbackAccount = null) {
+async function saveTokenResponse(tokenResponse, requestedTenantId = configuredTenantId, fallbackRefreshToken = "", fallbackAccount = null) {
     if (!tokenResponse.access_token) {
         throw new OAuthTokenError("Token response did not include an access token", "");
     }
@@ -640,7 +741,7 @@ async function saveTokenResponse(tokenResponse, requestedTenantId = TENANT_ID, f
     return getAuthStatus();
 }
 
-async function exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenantId = TENANT_ID) {
+async function exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenantId = configuredTenantId) {
     const tokenResponse = await requestToken({
         grant_type: "authorization_code",
         code,
@@ -655,7 +756,7 @@ async function exchangeAuthorizationCode(code, codeVerifier, redirectUri, tenant
 // A refresh token is bound to the account rather than to one tenant, so redeeming it
 // against another tenant's endpoint yields an access token that vault's tenant accepts,
 // provided the app has a service principal there and the account has access.
-async function refreshAccessToken(refreshToken, tenantId = TENANT_ID, fallbackAccount = null) {
+async function refreshAccessToken(refreshToken, tenantId = configuredTenantId, fallbackAccount = null) {
     const tokenResponse = await requestToken({
         grant_type: "refresh_token",
         refresh_token: refreshToken,
@@ -666,8 +767,8 @@ async function refreshAccessToken(refreshToken, tenantId = TENANT_ID, fallbackAc
 }
 
 async function handleSignIn(requestedTenantId = "") {
-    if (!isClientConfigured()) {
-        throw new AuthRequiredError("Extension auth not configured");
+    if (!isAppConfigured()) {
+        throw new AuthRequiredError(APP_NOT_CONFIGURED_MESSAGE);
     }
 
     const tenantId = normalizeTenantKey(requestedTenantId);
@@ -706,10 +807,11 @@ async function getAuthStatus() {
     const pendingSignIn = await getPendingSignIn();
 
     return {
-        configured: isClientConfigured(),
-        signedIn: hasCachedToken || Boolean(storedAuth.refreshToken),
-        clientId: CLIENT_ID,
-        tenantId: TENANT_ID,
+        configured: isAppConfigured(),
+        // A token left from before the app registration was set (or cleared) is unusable.
+        signedIn: isAppConfigured() && (hasCachedToken || Boolean(storedAuth.refreshToken)),
+        clientId,
+        tenantId: configuredTenantId,
         signedInTenantId: storedAuth.tenantId,
         pendingTenantId: pendingSignIn.tenantId,
         pendingTenantReason: pendingSignIn.reason,
@@ -717,6 +819,76 @@ async function getAuthStatus() {
         account: storedAuth.account,
         expiresAt: hasCachedToken ? getLatestCachedExpiry() : storedAuth.expiresAt
     };
+}
+
+function getConfigStatus() {
+    return {
+        configured: isAppConfigured(),
+        clientId,
+        tenantId: configuredTenantId,
+        redirectUri: chrome.identity.getRedirectURL()
+    };
+}
+
+// Both values are required. Returns the normalized pair, or an error message.
+function parseConfigInput(request) {
+    const clientIdInput = String(request.clientId ?? "").trim().toLowerCase();
+    const tenantIdInput = String(request.tenantId ?? "").trim().toLowerCase();
+
+    if (!clientIdInput) {
+        return { error: "Application (client) ID is required" };
+    }
+
+    if (!isGuid(clientIdInput)) {
+        return { error: "Application (client) ID must be a GUID, like 00000000-0000-0000-0000-000000000000" };
+    }
+
+    if (!tenantIdInput) {
+        return { error: `Directory (tenant) ID is required: a tenant GUID or "${ANY_ORGANIZATION_TENANT}"` };
+    }
+
+    if (!normalizeConfiguredTenant(tenantIdInput)) {
+        return { error: `Directory (tenant) ID must be a GUID or "${ANY_ORGANIZATION_TENANT}"` };
+    }
+
+    return { clientId: clientIdInput, tenantId: tenantIdInput };
+}
+
+// A refresh token belongs to the app registration and authority that issued it, so it
+// cannot be redeemed after either changes. Clearing it gives a clean sign-in prompt
+// instead of a failed token request later.
+async function updateConfig(nextClientId, nextTenantId) {
+    const changed = nextClientId !== clientId || nextTenantId !== configuredTenantId;
+
+    if (nextClientId) {
+        await storageSet({
+            [CLIENT_ID_CONFIG_KEY]: nextClientId,
+            [TENANT_ID_CONFIG_KEY]: nextTenantId
+        });
+    } else {
+        await storageRemove(CONFIG_STORAGE_KEYS);
+    }
+
+    applyConfig(nextClientId, nextTenantId);
+
+    if (changed) {
+        await clearOAuthAuth();
+    }
+
+    return { ...getConfigStatus(), changed };
+}
+
+async function handleSaveConfig(request) {
+    const parsed = parseConfigInput(request);
+    if (parsed.error) {
+        return { error: parsed.error };
+    }
+
+    return updateConfig(parsed.clientId, parsed.tenantId);
+}
+
+async function handleClearConfig() {
+    return updateConfig("", "");
 }
 
 function isInteractionRequiredError(error) {
@@ -735,7 +907,7 @@ function createAccessTokenRequest(tenantKey) {
     return (async () => {
         const storedAuth = await getStoredAuth();
 
-        if (!isClientConfigured() || !storedAuth.refreshToken) {
+        if (!isAppConfigured() || !storedAuth.refreshToken) {
             return "";
         }
 
@@ -747,7 +919,7 @@ function createAccessTokenRequest(tenantKey) {
             // got that far, such as a timeout, which says nothing about consent.
             const isEntraRejection = error instanceof OAuthTokenError && Boolean(error.code);
 
-            if (tenantKey !== TENANT_ID) {
+            if (tenantKey !== configuredTenantId) {
                 // Failing for one tenant tells us nothing about the tenant already signed
                 // in, so record it for the popup rather than dropping the whole session.
                 // Any rejection counts here: a tenant that has never consented to the app
@@ -772,7 +944,7 @@ function createAccessTokenRequest(tenantKey) {
     });
 }
 
-async function getAccessToken(tenantId = TENANT_ID) {
+async function getAccessToken(tenantId = configuredTenantId) {
     const tenantKey = normalizeTenantKey(tenantId);
     const cachedToken = getCachedAccessToken(tenantKey);
     if (cachedToken) {
@@ -788,8 +960,8 @@ async function getAccessToken(tenantId = TENANT_ID) {
         return token;
     }
 
-    if (!isClientConfigured()) {
-        throw new AuthRequiredError("Extension auth not configured");
+    if (!isAppConfigured()) {
+        throw new AuthRequiredError(APP_NOT_CONFIGURED_MESSAGE);
     }
 
     throw new AuthRequiredError("Sign in required");
@@ -928,7 +1100,7 @@ async function sendVaultRequest(url, options, accessToken) {
 // is then cached so later calls skip the extra round trip.
 async function keyVaultRequest(vaultName, url, options = {}) {
     const knownTenantId = await getVaultTenant(vaultName);
-    const attemptedTenantId = normalizeTenantKey(knownTenantId || TENANT_ID);
+    const attemptedTenantId = normalizeTenantKey(knownTenantId || configuredTenantId);
     const result = await sendVaultRequest(url, options, await getAccessToken(attemptedTenantId));
 
     if (result.ok || result.status !== 401) {

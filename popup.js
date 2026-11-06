@@ -1,11 +1,13 @@
 const signInButton = document.getElementById("signInBtn");
 const signOutButton = document.getElementById("signOutBtn");
+const settingsButton = document.getElementById("settingsBtn");
 const status = document.getElementById("status");
 const accountInfo = document.getElementById("accountInfo");
 const configInfo = document.getElementById("configInfo");
 const lede = document.getElementById("lede");
 
 const DEFAULT_LEDE = lede.textContent;
+const SETUP_LEDE = "Enter your Microsoft Entra app registration in Settings, then sign in.";
 const SIGNED_IN_LEDE = "Open a Key Vault in Azure Portal, then reveal secret values from the command bar.";
 
 let currentAuthStatus = null;
@@ -76,7 +78,12 @@ function renderAuthStatus(authStatus) {
 
     updateButtonStates(authStatus);
     accountInfo.textContent = accountName ? `Account: ${accountName}` : "";
-    lede.textContent = signInButton.hidden ? SIGNED_IN_LEDE : DEFAULT_LEDE;
+    configInfo.textContent = authStatus.clientId ? `App ID: ${authStatus.clientId}` : "";
+    if (!authStatus.configured) {
+        lede.textContent = SETUP_LEDE;
+    } else {
+        lede.textContent = signInButton.hidden ? SIGNED_IN_LEDE : DEFAULT_LEDE;
+    }
 
     if (pendingTenantId && authStatus.pendingTenantReason) {
         showStatus(`A vault you opened belongs to tenant ${pendingTenantId}, which rejected this extension: ${authStatus.pendingTenantReason}. A tenant admin may need to fix this; signing in again may not help.`, true);
@@ -86,7 +93,7 @@ function renderAuthStatus(authStatus) {
     } else if (authStatus.signedIn) {
         showStatus("Signed in.");
     } else if (!authStatus.configured) {
-        showStatus("Configure CLIENT_ID in background.js before signing in.", true);
+        showStatus("Set the app registration in Settings before signing in.", true);
     } else {
         showStatus("Needs sign-in.", true);
     }
@@ -159,6 +166,18 @@ signInButton.addEventListener("click", async () => {
     } finally {
         setBusy(false);
     }
+});
+
+settingsButton.addEventListener("click", () => {
+    chrome.runtime.openOptionsPage(() => {
+        const runtimeError = getRuntimeErrorMessage();
+        if (runtimeError) {
+            showStatus(`Could not open settings: ${runtimeError}`, true);
+            return;
+        }
+
+        window.close();
+    });
 });
 
 signOutButton.addEventListener("click", async () => {

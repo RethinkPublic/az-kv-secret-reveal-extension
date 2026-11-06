@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Azure Key Vault Secret Revealer",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Reveal, edit, create, search, export and import Key Vault secrets in the Azure Portal with your own Azure RBAC access.",
   "minimum_chrome_version": "102",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArd+AwevU46sdLpYkwiwOWCL9EaTCusFFuU/mE2TG8/WVPDwQRTOm4l7Nm6PyxS0a/yPVECfgYQeIAY8heF6UB4XeVJK+7Hx2TEWgAH30zW7SYCcs4GJkKZNNVorR5ezrXQgNShDUGZI78TxAL1+zY5e4GFHx4r1r/owCfv5kymATTuO4WxQD8HFm1bRoSMd6RD2zkCYsjfZYbN1PXwgSZFPTmodAvsAatyM6njspJI7c2hE3VDBa1GvmZU3wDIh4ydpZyFTbbkDEXe1wCCY3yT5683BsdbnKhZ58TlqW2lydpyb4DhFnjsjvOlVnGTphjUhV+Nz5YUQR9jaJZiAqOwIDAQAB",
@@ -25,6 +25,10 @@
   },
   "background": {
     "service_worker": "background.js"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
   },
   "action": {
     "default_icon": {
